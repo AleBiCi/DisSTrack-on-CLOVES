@@ -1,0 +1,24 @@
+{
+   "island": "DEPT",
+   "start_time": "asap",
+   "duration": 120,
+   "binaries": [
+      {
+         "hardware": "evb1000",
+         "bin_file": "rng-init.bin",
+         "targets": [
+            1
+         ]
+      },
+      {
+         "hardware": "evb1000",
+         "bin_file": "rng-resp.bin",
+         "targets": [
+            2,
+            3,
+            7,
+            36
+         ]
+      }
+   ]
+}
