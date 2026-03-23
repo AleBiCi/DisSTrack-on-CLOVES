@@ -41,6 +41,13 @@ DisSTrack-on-CLOVES/
 ├── README.md                               Project documentation
 ├── .gitignore                              Git ignore rules
 │
+├── CLOVES_client/                          Client-side tools for interacting with the
+│   │                                       CLOVES testbed
+│   ├── iot_testbed_client.py               Main client script used to validate, schedule
+│   │                                       and submit jobs among others
+│   ├── requirements.txt                    Python requirements
+│   └── testbediot-disi-unitn-it-chain.pem  Digital TSA certificate
+│
 ├── Matlab_Sim/                             Main simulation and data processing
 │   ├── DynamicCluster_and_DistributedKalman.m
 │   │                                       Principal EKF implementation with
