@@ -2,7 +2,12 @@
 .DS_Store
 
 # Python .venv
-.venv/
+venv/
 
 # Matlab autosave files
 *.asv
+
+# logs and bins
+logs_*/
+bins/
+build_nodes/
