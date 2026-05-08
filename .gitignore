@@ -11,3 +11,5 @@ venv/
 logs_*/
 bins/
 build_nodes/
+
+job_*/
