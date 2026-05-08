@@ -14,6 +14,9 @@ venv/
 # Node builds folders
 build_nodes/
 
+# Job nodes folders
+job_*/
+
 # Variance logs directory
 logs_varianza_v2/
 
