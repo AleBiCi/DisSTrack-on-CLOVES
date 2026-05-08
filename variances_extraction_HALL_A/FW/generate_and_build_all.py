@@ -7,9 +7,7 @@ BUILD_BASE    = "build_nodes"
 BINS_DIR      = "bins"
 
 VALID_NODES = {
-    50, 51, 52, 53, 54, 55, 56, 57, 58,
-    61, 62, 63, 64, 65, 70, 71, 72, 73,
-    74, 75, 76, 77
+    70, 71, 72, 73, 74, 75, 76, 77
 }
 
 def parse_csv(path):
