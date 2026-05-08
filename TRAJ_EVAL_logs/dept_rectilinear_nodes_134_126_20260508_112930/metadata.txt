@@ -1,0 +1,13 @@
+TRAJ_EVAL rectilinear session
+created_at,2026-05-08 11:29:30
+anchor_start_node_id,134
+anchor_end_node_id,126
+start_x_m,186.200000
+start_y_m,8.240000
+end_x_m,184.220000
+end_y_m,21.260000
+path_length_m,13.169692
+heading_rad,1.721713755
+heading_deg,98.646932
+samples_csv,C:\Users\frass\OneDrive\Desktop\UNI\Magistrale - Mechatronics Engineering - Unitn\Anno 5\Intelligent Distributed system\Project_UNTRACKED\repo_andre_WORKINGVERSION\TRAJ_EVAL_logs\dept_rectilinear_nodes_134_126_20260508_112930\samples.csv
+start_round_id,100

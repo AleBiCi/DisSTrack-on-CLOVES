@@ -1,22 +1,21 @@
 %% LOCALIZATION PROBLEM - UNICYCLE, RANGE-ONLY EKF
-% Real-time: reads full UWB rounds from the EVB1000 tag via USB serial.
-% This revision implements:
-%   - System definition (unicycle EKF model)
-%   - Weighted trilateration with WLS + P0 init
+% TRAJECTORY EVALUATION TEST - trace a rectilinear target trajectory
+% between two far apart anchors, follow in real time test, linear
+% regression of estimated positions to evaluate std, var from ideal traj.
 clearvars; clc; close all;
 
 %% Variables
 tracking_node_ids = [108, 113:119, 121:154];
 default_noise = 0.07;
-z_fixed_m = 1.30; % [m] tag height used in range model (set as needed)
+z_fixed_m = 1.50; % [m] tag height from the ceiling
 
 % Room-constraint flags (hooks kept explicit for later pipeline steps).
 enable_room_constraint = true;
 room_model_path = "room_constraint_model_projective.mat";
-room_constraint_on_init = true;
-room_constraint_on_predict = false;
+room_constraint_on_init = false;
+room_constraint_on_predict = true;
 room_constraint_on_update = true;
-room_projection_threshold_m = 0.70;
+room_projection_threshold_m = 0.85;
 
 % Placeholder flag for optional distance-transform logic.
 enable_distance_penalty = false;
@@ -106,7 +105,7 @@ dT = 0.5;
 
 % Process-noise hyperparameters (on speed and yaw-rate channels).
 sigma_v_process = 0.12;       % [m/s]
-sigma_omega_process = 0.18;   % [rad/s]
+sigma_omega_process = 0.08;   % [rad/s]
 
 % Unicycle dynamics x_{k+1} = f(x_k).
 fun = @(xk) [ ...
@@ -149,12 +148,39 @@ H_range = @(xk, anchors_xyz) build_range_jacobian_unicycle(xk, anchors_xyz, z_fi
 
 %% Trilateration (WLS) + P0 initialization
 cfg_init = struct();
-cfg_init.max_init_attempts = 30;                  % max serial rounds to find a valid initialization
+cfg_init.mode = "multi";                          % "single" | "multi"
+cfg_init.max_init_attempts = 45;                  % max serial rounds scanned during initialization
 cfg_init.initial_heading_std_rad = deg2rad(75);   % std dev of initial heading uncertainty
 cfg_init.initial_speed_std_mps = 0.70;            % std dev of initial linear speed
 cfg_init.initial_yaw_rate_std_radps = 0.90;       % std dev of initial yaw rate
 cfg_init.min_xy_variance_m2 = 0.20^2;             % minimum variance floor on x/y at initialization
 cfg_init.range_variance_distance_gain = 2e-5;     % k in sigma^2(d) = sigma0^2 + k*d^2
+cfg_init.bootstrap_target_rounds = 15;            % target count of valid WLS rounds used in multi-round init
+cfg_init.bootstrap_min_valid_rounds = 4;          % minimum valid WLS rounds required in multi-round init
+cfg_init.bootstrap_min_anchor_count = 3;          % minimum anchors in one round to accept it for bootstrap
+cfg_init.bootstrap_mae_gate_k = 2.0;              % robust gate factor for round MAE outlier rejection
+cfg_init.bootstrap_mae_gate_min_m = 0.20;         % minimum absolute MAE gate [m]
+cfg_init.bootstrap_xy_gate_k = 2.5;               % robust gate factor for XY outlier rejection
+cfg_init.bootstrap_xy_gate_min_m = 0.35;          % minimum absolute XY gate [m]
+cfg_init.bootstrap_min_heading_span_m = 0.30;     % minimum displacement span to trust heading from bootstrap
+cfg_init.bootstrap_heading_std_floor_rad = deg2rad(12); % lower bound on theta std when heading is estimated
+
+% Shared corridor geometry (used by both init fallback-heading and runtime heading prior).
+corridor_half_width_m = 1.40; % [m]
+corridor_segments_xyxy = [ ...
+    133.6, 26.1, 188.6, 26.1; ...
+    133.6, 10.9, 133.6, 26.1; ...
+    133.6, 10.9, 188.6, 10.9];
+atrium_polygon_xy = [ ...
+    181.0, 24.0; ...
+    189.4, 24.0; ...
+    189.4, 12.8; ...
+    181.0, 12.8];
+cfg_init.enable_corridor_heading_fallback = true;
+cfg_init.corridor_half_width_m = corridor_half_width_m;
+cfg_init.corridor_segments_xyxy = corridor_segments_xyxy;
+cfg_init.disable_corridor_prior_in_atrium = true;
+cfg_init.atrium_polygon_xy = atrium_polygon_xy;
 
 % Runtime visualization settings.
 viz_cfg = struct();
@@ -174,6 +200,25 @@ gif_cfg.capture_every_n = 1;
 gif_cfg.output_basename = "main_dept_map_recording";
 gif_cfg.output_dir = fullfile(project_root, 'recordings', 'dept');
 
+%% TRAJ_EVAL rectilinear reference + logging setup
+traj_eval_cfg = struct();
+traj_eval_cfg.enabled = true;
+traj_eval_cfg.logging_enabled = true;
+% Default rectilinear test: long upper DEPT corridor, from node 123 to node 138.
+% Change these two ids to evaluate a different straight segment.
+traj_eval_cfg.rect_anchor_node_ids = [134, 126];
+traj_eval_cfg.logs_root_dir = fullfile(project_root, 'TRAJ_EVAL_logs');
+traj_eval_cfg.session_prefix = "dept_rectilinear";
+traj_eval = init_traj_eval(traj_eval_cfg, map, dT);
+if traj_eval.enabled
+    fprintf('[traj_eval] reference nodes %d -> %d | length=%.2f m | heading=%.1f deg\n', ...
+        traj_eval.reference.anchor_node_ids(1), traj_eval.reference.anchor_node_ids(2), ...
+        traj_eval.reference.length_m, rad2deg(traj_eval.reference.heading_rad));
+    if traj_eval.logging_enabled
+        fprintf('[traj_eval] logging samples to %s\n', traj_eval.csv_path);
+    end
+end
+
 fprintf('[init] opening serial %s @ %d\n', serial_port, baud_rate);
 while true
     try
@@ -190,7 +235,7 @@ flush(s);
 %% Plot setup
 % Max buffer size for position estimates (dots) and heading estimates
 % (quivers)
-max_trail_points = 50; % approx. 2 points per second ==> plot 25s of estimates
+max_trail_points = 80; % approx. 2 points per second ==> plot 40s of estimates
 % Buffers for u and v (lateral and longitudinal components of heading
 % vector)
 traj_u = [];
@@ -212,11 +257,24 @@ h_heading_cone = patch('XData', NaN, 'YData', NaN, ...
     'FaceColor', [0.15, 0.65, 0.15], 'FaceAlpha', 0.14, ...
     'EdgeColor', [0.05, 0.45, 0.05], 'LineStyle', '--', 'LineWidth', 1.1, ...
     'DisplayName', 'Cono incertezza heading');
+h_traj_eval_closest = [];
+h_traj_eval_error = [];
+if traj_eval.enabled
+    ref_xy = traj_eval.reference.points_xy;
+    plot(ref_xy(:,1), ref_xy(:,2), 'k--', 'LineWidth', 2.0, ...
+        'DisplayName', 'Traiettoria rettilinea target');
+    plot(ref_xy(:,1), ref_xy(:,2), 'ks', 'MarkerSize', 8, 'LineWidth', 1.5, ...
+        'MarkerFaceColor', [1.0, 0.90, 0.15], 'DisplayName', 'Estremi test rettilineo');
+    h_traj_eval_closest = plot(NaN, NaN, 'ko', 'MarkerSize', 8, 'LineWidth', 1.3, ...
+        'MarkerFaceColor', [1.0, 0.70, 0.10], 'DisplayName', 'Punto target piu vicino');
+    h_traj_eval_error = plot(NaN, NaN, '-', 'Color', [0.90, 0.35, 0.05], ...
+        'LineWidth', 1.2, 'DisplayName', 'Errore vs traiettoria');
+end
 colormap(ax_main, parula(256));
 cb_anchor_var = colorbar(ax_main, 'eastoutside');
 cb_anchor_var.Label.String = 'Varianza ancore usate [m^2]';
 xlabel('X [m]'); ylabel('Y [m]');
-title('Real-Time UWB EKF Tracking  |  single-round initialization');
+title('Real-Time UWB EKF Tracking  |  adaptive initialization');
 legend('Location', 'best');
 
 x_span = max(all_anchors(:,1)) - min(all_anchors(:,1));
@@ -231,12 +289,15 @@ drawnow;
 gif_recorder = map_gif_recorder('start', gif_cfg);
 gif_recorder = map_gif_recorder('capture', gif_recorder, map_fig);
 
-[x0, P0, init_info] = initialize_state_weighted_single_round( ...
+[x0, P0, init_info] = initialize_state_weighted( ...
     s, map, addr_short, noise_map, bias_map, default_noise, z_fixed_m, cfg_init, ...
     room_constraint, room_constraint_on_init, room_projection_threshold_m);
 
-fprintf('[init] single-round init: r=%d raw/used=%d/%d mae=%.2fm\n', ...
-    init_info.round_id, init_info.raw_count, init_info.used_count, init_info.mae_m);
+init_mode_char = char(string(init_info.mode));
+init_heading_src_char = char(string(init_info.heading_source));
+fprintf('[init] mode=%s accepted=%d/%d last_round=%d mae=%.2fm heading=%s\n', ...
+    init_mode_char, init_info.accepted_rounds, init_info.total_attempts, ...
+    init_info.round_id, init_info.mae_m, init_heading_src_char);
 fprintf('[init] distance variance model: sigma^2(d)=sigma0^2 + %.2e*d^2\n', cfg_init.range_variance_distance_gain);
 fprintf('[init] x0=[%.2f %.2f %.2f %.2f %.2f]\n', x0(1), x0(2), x0(3), x0(4), x0(5));
 fprintf('[init] P0 diag=[%.4f %.4f %.4f %.4f %.4f]\n', P0(1,1), P0(2,2), P0(3,3), P0(4,4), P0(5,5));
@@ -260,6 +321,13 @@ gif_recorder = map_gif_recorder('capture', gif_recorder, map_fig);
 x_est = x0; 
 P_est = P0;
 x_prev_est = x_est; % Previous state estimate --> useful to infer theta (heading angle)
+traj_eval = set_traj_eval_start_round(traj_eval, init_info.round_id);
+init_rr_log = struct('round_id', init_info.round_id, 'raw_count', init_info.raw_count, ...
+    'used_count', init_info.used_count);
+[traj_eval, init_eval_row] = append_traj_eval_log( ...
+    traj_eval, x_est, P_est, init_rr_log, 0, "init", string(init_info.mode), ...
+    init_info.used_count, trace(P_est(1:2,1:2)));
+update_traj_eval_plot_handles(init_eval_row, x_est, h_traj_eval_closest, h_traj_eval_error);
 fprintf('[init] step-3 complete: weighted trilateration + P0 ready\n');
 
 %% Main loop - EKF tracking (predict + update per round)
@@ -288,22 +356,15 @@ heading_prior_cfg.base_heading_std_rad = sigma_theta;
 % Std used inside corridors (smaller => stronger alignment to corridor).
 heading_prior_cfg.corridor_heading_std_rad = deg2rad(10);
 % Distance from corridor centerline under which corridor prior is active.
-heading_prior_cfg.corridor_half_width_m = 1.40;            % [m]
+heading_prior_cfg.corridor_half_width_m = corridor_half_width_m;            % [m]
 % If true: snap directly to axis heading.
 % If false: blend motion heading and axis heading based on lateral distance.
 heading_prior_cfg.use_axis_heading_only_in_corridor = true;
 % Corridor centerlines as [x1 y1 x2 y2] segments (blue area).
-heading_prior_cfg.corridor_segments_xyxy = [ ...
-    133.6, 26.1, 188.6, 26.1; ...
-    133.6, 10.9, 133.6, 26.1; ...
-    133.6, 10.9, 188.6, 10.9];
+heading_prior_cfg.corridor_segments_xyxy = corridor_segments_xyxy;
 % Atrium polygon (green area): inside this region, do NOT apply corridor axis forcing (keep only motion-derived heading prior).
 heading_prior_cfg.disable_corridor_prior_in_atrium = true;
-heading_prior_cfg.atrium_polygon_xy = [ ...
-    181.0, 24.0; ...
-    189.4, 24.0; ...
-    189.4, 12.8; ...
-    181.0, 12.8];
+heading_prior_cfg.atrium_polygon_xy = atrium_polygon_xy;
 
 fprintf('[track] EKF loop started\n');
 
@@ -411,11 +472,13 @@ while true
             fprintf('[room] round %d update projected (dist=%.2f m, thr=%.2f m)\n', ...
                 rr.round_id, info_upd_room.distance_to_free_m, room_projection_threshold_m);
         elseif strcmp(info_upd_room.action, 'reject')
-            x_upd = x_pred;
-            P_upd = P_pred;
+            x_upd = x_est;
+            P_upd = P_est;
+            x_upd(4) = 0;
+            x_upd(5) = 0;
             mode_str = "map reject";
             note_str = "reject";
-            fprintf('[room] round %d update rejected (dist=%.2f m > thr=%.2f m), using prediction\n', ...
+            fprintf('[room] round %d update rejected (dist=%.2f m > thr=%.2f m), holding previous valid state\n', ...
                 rr.round_id, info_upd_room.distance_to_free_m, room_projection_threshold_m);
         end
     end
@@ -507,6 +570,14 @@ while true
     set(h_heading_cone, 'XData', cone_x, 'YData', cone_y);
 
     cov_xy_trace = trace(P_est(1:2,1:2));
+    traj_eval_error_m = NaN;
+    [traj_eval, traj_eval_row] = append_traj_eval_log( ...
+        traj_eval, x_est, P_est, rr, k_loop, mode_str, note_str, used_count, cov_xy_trace);
+    if traj_eval.enabled
+        traj_eval_error_m = traj_eval_row.distance_to_rect_m;
+        update_traj_eval_plot_handles(traj_eval_row, x_est, h_traj_eval_closest, h_traj_eval_error);
+    end
+
     if isnan(rr.round_id)
         r_print = -1;
     else
@@ -514,9 +585,16 @@ while true
     end
     mode_char = char(mode_str);
 
-    title(sprintf('Real-Time UWB EKF | mode=%s | r=%d | pos=(%.2f, %.2f)', upper(mode_char), r_print, x_est(1), x_est(2)));
-    set(status_text, 'String', sprintf('k=%d | round=%d | mode=%s | note=%s | anchors=%d', ...
-        k_loop, r_print, mode_char, char(note_str), used_count));
+    if isfinite(traj_eval_error_m)
+        title(sprintf('Real-Time UWB EKF | mode=%s | r=%d | pos=(%.2f, %.2f) | rect err=%.2fm', ...
+            upper(mode_char), r_print, x_est(1), x_est(2), traj_eval_error_m));
+        set(status_text, 'String', sprintf('k=%d | round=%d | mode=%s | note=%s | anchors=%d | rect err=%.2fm', ...
+            k_loop, r_print, mode_char, char(note_str), used_count, traj_eval_error_m));
+    else
+        title(sprintf('Real-Time UWB EKF | mode=%s | r=%d | pos=(%.2f, %.2f)', upper(mode_char), r_print, x_est(1), x_est(2)));
+        set(status_text, 'String', sprintf('k=%d | round=%d | mode=%s | note=%s | anchors=%d', ...
+            k_loop, r_print, mode_char, char(note_str), used_count));
+    end
     drawnow limitrate;
     gif_recorder = map_gif_recorder('capture', gif_recorder, map_fig);
 
@@ -525,10 +603,552 @@ while true
         x_est(1), x_est(2), x_est(4), x_est(5), cov_xy_trace);
 end
 
-%% Save recorded map GIF
+%% Save TRAJ_EVAL logs + recorded map GIF
+traj_eval = finalize_traj_eval_log(traj_eval);
 map_gif_recorder('prompt_save', gif_recorder);
 
 %% Local functions
+function traj_eval = init_traj_eval(cfg, map, dT)
+%INIT_TRAJ_EVAL Build the rectilinear reference and prepare per-run logs.
+    traj_eval = empty_traj_eval_state();
+    traj_eval.enabled = logical(get_cfg_value(cfg, 'enabled', true));
+    if ~traj_eval.enabled
+        return;
+    end
+
+    anchor_ids = double(get_cfg_value(cfg, 'rect_anchor_node_ids', [108, 123]));
+    if numel(anchor_ids) ~= 2
+        error('[traj_eval] rect_anchor_node_ids must contain exactly two node ids.');
+    end
+
+    [p0_xy, p0_label] = map_node_xy(map, anchor_ids(1));
+    [p1_xy, p1_label] = map_node_xy(map, anchor_ids(2));
+    ref_vec = p1_xy - p0_xy;
+    path_length_m = norm(ref_vec);
+    if path_length_m <= 1e-6
+        error('[traj_eval] rectilinear reference endpoints are coincident.');
+    end
+
+    traj_eval.reference = struct();
+    traj_eval.reference.anchor_node_ids = anchor_ids(:).';
+    traj_eval.reference.anchor_labels = {p0_label, p1_label};
+    traj_eval.reference.points_xy = [p0_xy; p1_xy];
+    traj_eval.reference.unit_xy = ref_vec ./ path_length_m;
+    traj_eval.reference.length_m = path_length_m;
+    traj_eval.reference.heading_rad = atan2(ref_vec(2), ref_vec(1));
+    traj_eval.dT = dT;
+    traj_eval.created_at = datestr(now, 'yyyy-mm-dd HH:MM:SS');
+    traj_eval.logging_enabled = logical(get_cfg_value(cfg, 'logging_enabled', true));
+
+    if ~traj_eval.logging_enabled
+        return;
+    end
+
+    logs_root_dir = char(get_cfg_value(cfg, 'logs_root_dir', fullfile(pwd, 'TRAJ_EVAL_logs')));
+    if isempty(strtrim(logs_root_dir))
+        logs_root_dir = fullfile(pwd, 'TRAJ_EVAL_logs');
+    end
+    if exist(logs_root_dir, 'dir') ~= 7
+        mkdir(logs_root_dir);
+    end
+
+    session_prefix = char(get_cfg_value(cfg, 'session_prefix', 'traj_eval_rectilinear'));
+    session_prefix = regexprep(strtrim(session_prefix), '[^\w.-]', '_');
+    if isempty(session_prefix)
+        session_prefix = 'traj_eval_rectilinear';
+    end
+    timestamp = datestr(now, 'yyyymmdd_HHMMSS');
+    session_name = sprintf('%s_nodes_%d_%d_%s', session_prefix, anchor_ids(1), anchor_ids(2), timestamp);
+    session_dir = fullfile(logs_root_dir, session_name);
+    if exist(session_dir, 'dir') ~= 7
+        mkdir(session_dir);
+    end
+
+    traj_eval.logs_root_dir = logs_root_dir;
+    traj_eval.session_dir = session_dir;
+    traj_eval.csv_path = fullfile(session_dir, 'samples.csv');
+    traj_eval.summary_path = fullfile(session_dir, 'summary.txt');
+    traj_eval.summary_csv_path = fullfile(session_dir, 'summary.csv');
+    traj_eval.mat_path = fullfile(session_dir, 'traj_eval_session.mat');
+    write_traj_eval_csv_header(traj_eval.csv_path);
+    write_traj_eval_metadata(traj_eval, 'init');
+end
+
+function traj_eval = empty_traj_eval_state()
+    traj_eval = struct();
+    traj_eval.enabled = false;
+    traj_eval.logging_enabled = false;
+    traj_eval.reference = struct();
+    traj_eval.dT = NaN;
+    traj_eval.created_at = '';
+    traj_eval.start_round_id = NaN;
+    traj_eval.row_count = 0;
+    traj_eval.logs_root_dir = '';
+    traj_eval.session_dir = '';
+    traj_eval.csv_path = '';
+    traj_eval.summary_path = '';
+    traj_eval.summary_csv_path = '';
+    traj_eval.mat_path = '';
+end
+
+function value = get_cfg_value(cfg, field_name, default_value)
+    value = default_value;
+    if isstruct(cfg) && isfield(cfg, field_name) && ~isempty(cfg.(field_name))
+        value = cfg.(field_name);
+    end
+end
+
+function [xy, label] = map_node_xy(map, node_id)
+    idx = find(double(map.NodeId) == double(node_id), 1);
+    if isempty(idx)
+        error('[traj_eval] node %d is not present in the current DEPT tracking map.', node_id);
+    end
+    xy = [double(map.lat(idx)), double(map.lon(idx))];
+    label = sprintf('node_%d', node_id);
+end
+
+function write_traj_eval_csv_header(csv_path)
+    fid = fopen(csv_path, 'w');
+    if fid < 0
+        error('[traj_eval] could not create log file: %s', csv_path);
+    end
+    cleaner = onCleanup(@() fclose(fid));
+    fprintf(fid, ['sample_idx,round_id,relative_round_idx,time_s,' ...
+        'est_x_m,est_y_m,est_theta_rad,est_v_mps,est_omega_radps,' ...
+        'closest_rect_x_m,closest_rect_y_m,distance_to_rect_m,' ...
+        'signed_cross_track_m,abs_cross_track_m,' ...
+        'along_track_m,unclamped_along_track_m,rect_fraction,rect_fraction_unclamped,projection_clamped,' ...
+        'cov_xx_m2,cov_yy_m2,cov_xy_m2,cov_xy_trace_m2,' ...
+        'raw_anchor_count,used_anchor_count,mode,note\n']);
+end
+
+function write_traj_eval_metadata(traj_eval, phase)
+    if ~traj_eval.logging_enabled || isempty(traj_eval.session_dir)
+        return;
+    end
+
+    metadata_path = fullfile(traj_eval.session_dir, 'metadata.txt');
+    if strcmp(phase, 'init')
+        fid = fopen(metadata_path, 'w');
+    else
+        fid = fopen(metadata_path, 'a');
+    end
+    if fid < 0
+        fprintf('[traj_eval] warning: could not write metadata file %s\n', metadata_path);
+        return;
+    end
+    cleaner = onCleanup(@() fclose(fid));
+
+    ref = traj_eval.reference;
+    if strcmp(phase, 'init')
+        fprintf(fid, 'TRAJ_EVAL rectilinear session\n');
+        fprintf(fid, 'created_at,%s\n', traj_eval.created_at);
+        fprintf(fid, 'anchor_start_node_id,%d\n', ref.anchor_node_ids(1));
+        fprintf(fid, 'anchor_end_node_id,%d\n', ref.anchor_node_ids(2));
+        fprintf(fid, 'start_x_m,%.6f\n', ref.points_xy(1,1));
+        fprintf(fid, 'start_y_m,%.6f\n', ref.points_xy(1,2));
+        fprintf(fid, 'end_x_m,%.6f\n', ref.points_xy(2,1));
+        fprintf(fid, 'end_y_m,%.6f\n', ref.points_xy(2,2));
+        fprintf(fid, 'path_length_m,%.6f\n', ref.length_m);
+        fprintf(fid, 'heading_rad,%.9f\n', ref.heading_rad);
+        fprintf(fid, 'heading_deg,%.6f\n', rad2deg(ref.heading_rad));
+        fprintf(fid, 'samples_csv,%s\n', traj_eval.csv_path);
+    elseif strcmp(phase, 'start_round')
+        fprintf(fid, 'start_round_id,%.0f\n', traj_eval.start_round_id);
+    end
+end
+
+function traj_eval = set_traj_eval_start_round(traj_eval, round_id)
+    if ~traj_eval.enabled
+        return;
+    end
+    traj_eval.start_round_id = round_id;
+    write_traj_eval_metadata(traj_eval, 'start_round');
+end
+
+function [traj_eval, row] = append_traj_eval_log( ...
+    traj_eval, x_est, P_est, rr, k_loop, mode_str, note_str, used_count, cov_xy_trace)
+%APPEND_TRAJ_EVAL_LOG Append one EKF sample and its nearest rectilinear point.
+    row = empty_traj_eval_row();
+    if ~traj_eval.enabled
+        return;
+    end
+
+    row.sample_idx = traj_eval.row_count;
+    row.round_id = struct_numeric_field(rr, 'round_id', NaN);
+    if isfinite(row.round_id) && isfinite(traj_eval.start_round_id)
+        row.relative_round_idx = row.round_id - traj_eval.start_round_id;
+    else
+        row.relative_round_idx = k_loop;
+    end
+    row.time_s = k_loop * traj_eval.dT;
+
+    row.est_x_m = x_est(1);
+    row.est_y_m = x_est(2);
+    row.est_theta_rad = x_est(3);
+    row.est_v_mps = x_est(4);
+    row.est_omega_radps = x_est(5);
+
+    geom = closest_rectilinear_point([x_est(1), x_est(2)], traj_eval.reference);
+    row.closest_rect_x_m = geom.closest_xy(1);
+    row.closest_rect_y_m = geom.closest_xy(2);
+    row.distance_to_rect_m = geom.distance_to_segment_m;
+    row.signed_cross_track_m = geom.signed_cross_track_m;
+    row.abs_cross_track_m = abs(geom.signed_cross_track_m);
+    row.along_track_m = geom.along_track_m;
+    row.unclamped_along_track_m = geom.unclamped_along_track_m;
+    row.rect_fraction = geom.fraction;
+    row.rect_fraction_unclamped = geom.fraction_unclamped;
+    row.projection_clamped = double(geom.projection_clamped);
+
+    if ~isempty(P_est) && all(size(P_est) >= [2, 2])
+        row.cov_xx_m2 = P_est(1,1);
+        row.cov_yy_m2 = P_est(2,2);
+        row.cov_xy_m2 = P_est(1,2);
+    end
+    row.cov_xy_trace_m2 = cov_xy_trace;
+    row.raw_anchor_count = struct_numeric_field(rr, 'raw_count', NaN);
+    row.used_anchor_count = used_count;
+    row.mode = sanitize_csv_token(mode_str);
+    row.note = sanitize_csv_token(note_str);
+
+    if traj_eval.logging_enabled
+        append_traj_eval_csv_row(traj_eval.csv_path, row);
+    end
+    traj_eval.row_count = traj_eval.row_count + 1;
+end
+
+function row = empty_traj_eval_row()
+    row = struct();
+    row.sample_idx = NaN;
+    row.round_id = NaN;
+    row.relative_round_idx = NaN;
+    row.time_s = NaN;
+    row.est_x_m = NaN;
+    row.est_y_m = NaN;
+    row.est_theta_rad = NaN;
+    row.est_v_mps = NaN;
+    row.est_omega_radps = NaN;
+    row.closest_rect_x_m = NaN;
+    row.closest_rect_y_m = NaN;
+    row.distance_to_rect_m = NaN;
+    row.signed_cross_track_m = NaN;
+    row.abs_cross_track_m = NaN;
+    row.along_track_m = NaN;
+    row.unclamped_along_track_m = NaN;
+    row.rect_fraction = NaN;
+    row.rect_fraction_unclamped = NaN;
+    row.projection_clamped = NaN;
+    row.cov_xx_m2 = NaN;
+    row.cov_yy_m2 = NaN;
+    row.cov_xy_m2 = NaN;
+    row.cov_xy_trace_m2 = NaN;
+    row.raw_anchor_count = NaN;
+    row.used_anchor_count = NaN;
+    row.mode = '';
+    row.note = '';
+end
+
+function value = struct_numeric_field(s, field_name, default_value)
+    value = default_value;
+    if isstruct(s) && isfield(s, field_name) && ~isempty(s.(field_name))
+        value = double(s.(field_name));
+    end
+end
+
+function token = sanitize_csv_token(value)
+    token = char(value);
+    token = strtrim(token);
+    token = strrep(token, ',', ';');
+    token = strrep(token, sprintf('\n'), ' ');
+    token = strrep(token, sprintf('\r'), ' ');
+end
+
+function append_traj_eval_csv_row(csv_path, row)
+    fid = fopen(csv_path, 'a');
+    if fid < 0
+        fprintf('[traj_eval] warning: could not append to log file %s\n', csv_path);
+        return;
+    end
+    cleaner = onCleanup(@() fclose(fid));
+    fprintf(fid, ['%.0f,%.0f,%.0f,%.6f,' ...
+        '%.9f,%.9f,%.9f,%.9f,%.9f,' ...
+        '%.9f,%.9f,%.9f,' ...
+        '%.9f,%.9f,' ...
+        '%.9f,%.9f,%.9f,%.9f,%.0f,' ...
+        '%.9f,%.9f,%.9f,%.9f,' ...
+        '%.0f,%.0f,%s,%s\n'], ...
+        row.sample_idx, row.round_id, row.relative_round_idx, row.time_s, ...
+        row.est_x_m, row.est_y_m, row.est_theta_rad, row.est_v_mps, row.est_omega_radps, ...
+        row.closest_rect_x_m, row.closest_rect_y_m, row.distance_to_rect_m, ...
+        row.signed_cross_track_m, row.abs_cross_track_m, ...
+        row.along_track_m, row.unclamped_along_track_m, row.rect_fraction, row.rect_fraction_unclamped, row.projection_clamped, ...
+        row.cov_xx_m2, row.cov_yy_m2, row.cov_xy_m2, row.cov_xy_trace_m2, ...
+        row.raw_anchor_count, row.used_anchor_count, row.mode, row.note);
+end
+
+function geom = closest_rectilinear_point(point_xy, ref)
+%CLOSEST_RECTILINEAR_POINT Project a point onto the finite reference segment.
+    p = point_xy(:).';
+    p0 = ref.points_xy(1,:);
+    u = ref.unit_xy(:).';
+    path_length_m = ref.length_m;
+
+    rel = p - p0;
+    unclamped_along_m = dot(rel, u);
+    fraction_unclamped = unclamped_along_m / path_length_m;
+    fraction = min(max(fraction_unclamped, 0.0), 1.0);
+    along_m = fraction * path_length_m;
+    closest_xy = p0 + along_m * u;
+
+    geom = struct();
+    geom.closest_xy = closest_xy;
+    geom.distance_to_segment_m = norm(p - closest_xy);
+    geom.signed_cross_track_m = u(1) * rel(2) - u(2) * rel(1);
+    geom.unclamped_along_track_m = unclamped_along_m;
+    geom.along_track_m = along_m;
+    geom.fraction_unclamped = fraction_unclamped;
+    geom.fraction = fraction;
+    geom.projection_clamped = fraction ~= fraction_unclamped;
+end
+
+function update_traj_eval_plot_handles(row, x_est, h_closest, h_error)
+    if isempty(row) || ~isstruct(row) || ~isfinite(row.closest_rect_x_m)
+        return;
+    end
+    if ~isempty(h_closest) && isgraphics(h_closest)
+        set(h_closest, 'XData', row.closest_rect_x_m, 'YData', row.closest_rect_y_m);
+    end
+    if ~isempty(h_error) && isgraphics(h_error)
+        set(h_error, ...
+            'XData', [x_est(1), row.closest_rect_x_m], ...
+            'YData', [x_est(2), row.closest_rect_y_m]);
+    end
+end
+
+function traj_eval = finalize_traj_eval_log(traj_eval)
+%FINALIZE_TRAJ_EVAL_LOG Save statistics for post-run tracking evaluation.
+    if ~traj_eval.enabled || ~traj_eval.logging_enabled || isempty(traj_eval.csv_path)
+        return;
+    end
+    if exist(traj_eval.csv_path, 'file') ~= 2
+        fprintf('[traj_eval] no CSV log found; summary skipped\n');
+        return;
+    end
+
+    try
+        samples = readtable(traj_eval.csv_path);
+    catch ME
+        fprintf('[traj_eval] could not read samples CSV for summary: %s\n', ME.message);
+        return;
+    end
+
+    if isempty(samples) || height(samples) < 1
+        fprintf('[traj_eval] no samples logged; summary skipped\n');
+        return;
+    end
+
+    summary = compute_traj_eval_summary(samples, traj_eval.reference);
+    write_traj_eval_summary_txt(traj_eval.summary_path, summary, traj_eval);
+    write_traj_eval_summary_csv(traj_eval.summary_csv_path, summary);
+    save(traj_eval.mat_path, 'traj_eval', 'summary', 'samples');
+
+    fprintf('[traj_eval] saved %d samples in %s\n', height(samples), traj_eval.session_dir);
+    fprintf('[traj_eval] rect distance std=%.3f m | rmse=%.3f m | p95=%.3f m\n', ...
+        summary.distance_to_rect_m.std, summary.distance_to_rect_m.rmse, summary.distance_to_rect_m.p95);
+end
+
+function summary = compute_traj_eval_summary(samples, ref)
+    valid = isfinite(samples.distance_to_rect_m);
+    err = samples.distance_to_rect_m(valid);
+    signed_cross = samples.signed_cross_track_m(valid);
+    abs_cross = abs(signed_cross);
+    along = samples.along_track_m(valid);
+
+    summary = struct();
+    summary.sample_count = numel(err);
+    summary.path_length_m = ref.length_m;
+    summary.reference_heading_rad = ref.heading_rad;
+    summary.reference_heading_deg = rad2deg(ref.heading_rad);
+    summary.distance_to_rect_m = vector_stats(err);
+    summary.signed_cross_track_m = vector_stats(signed_cross);
+    summary.abs_cross_track_m = vector_stats(abs_cross);
+    summary.along_track_m = vector_stats(along);
+    summary.est_x_m = vector_stats(samples.est_x_m(valid));
+    summary.est_y_m = vector_stats(samples.est_y_m(valid));
+    summary.round = round_stats(samples);
+    summary.linear_fit = total_least_squares_line_summary(samples, valid, ref);
+end
+
+function s = vector_stats(x)
+    x = x(:);
+    x = x(isfinite(x));
+    s = struct('n', numel(x), 'mean', NaN, 'std', NaN, 'var', NaN, ...
+        'rmse', NaN, 'median', NaN, 'p95', NaN, 'min', NaN, 'max', NaN);
+    if isempty(x)
+        return;
+    end
+    s.mean = mean(x);
+    s.std = std(x);
+    s.var = var(x);
+    s.rmse = sqrt(mean(x.^2));
+    s.median = median(x);
+    s.p95 = percentile_no_toolbox(x, 95);
+    s.min = min(x);
+    s.max = max(x);
+end
+
+function p = percentile_no_toolbox(x, pct)
+    x = sort(x(:));
+    n = numel(x);
+    if n == 0
+        p = NaN;
+        return;
+    end
+    if n == 1
+        p = x(1);
+        return;
+    end
+    q = min(max(pct / 100.0, 0.0), 1.0);
+    pos = 1 + (n - 1) * q;
+    lo = floor(pos);
+    hi = ceil(pos);
+    if lo == hi
+        p = x(lo);
+    else
+        p = x(lo) + (pos - lo) * (x(hi) - x(lo));
+    end
+end
+
+function s = round_stats(samples)
+    finite_round = samples.round_id(isfinite(samples.round_id));
+    finite_rel = samples.relative_round_idx(isfinite(samples.relative_round_idx));
+    s = struct('start_round_id', NaN, 'end_round_id', NaN, 'first_relative_round_idx', NaN, ...
+        'last_relative_round_idx', NaN, 'sample_count', height(samples));
+    if ~isempty(finite_round)
+        s.start_round_id = min(finite_round);
+        s.end_round_id = max(finite_round);
+    end
+    if ~isempty(finite_rel)
+        s.first_relative_round_idx = min(finite_rel);
+        s.last_relative_round_idx = max(finite_rel);
+    end
+end
+
+function fit = total_least_squares_line_summary(samples, valid, ref)
+    fit = struct('heading_rad', NaN, 'heading_deg', NaN, 'heading_error_rad', NaN, ...
+        'heading_error_deg', NaN, 'mean_reference_signed_offset_m', NaN, ...
+        'residual_to_fit_m', vector_stats([]));
+
+    xy = [samples.est_x_m(valid), samples.est_y_m(valid)];
+    xy = xy(all(isfinite(xy), 2), :);
+    if size(xy, 1) < 2
+        return;
+    end
+
+    mu = mean(xy, 1);
+    centered = xy - mu;
+    C = centered.' * centered / max(size(centered, 1) - 1, 1);
+    [V, D] = eig(0.5 * (C + C.'));
+    [~, idx] = max(diag(D));
+    direction = V(:, idx);
+    if norm(direction) <= 1e-12 || any(~isfinite(direction))
+        return;
+    end
+    theta_fit = atan2(direction(2), direction(1));
+    theta_fit = choose_axis_heading_direction(theta_fit, ref.heading_rad);
+    u_fit = [cos(theta_fit), sin(theta_fit)];
+
+    residual = u_fit(1) * (xy(:,2) - mu(2)) - u_fit(2) * (xy(:,1) - mu(1));
+    ref_u = ref.unit_xy(:).';
+    ref_p0 = ref.points_xy(1,:);
+    ref_offset = ref_u(1) * (xy(:,2) - ref_p0(2)) - ref_u(2) * (xy(:,1) - ref_p0(1));
+
+    fit.heading_rad = theta_fit;
+    fit.heading_deg = rad2deg(theta_fit);
+    fit.heading_error_rad = wrap_angle_pi(theta_fit - ref.heading_rad);
+    fit.heading_error_deg = rad2deg(fit.heading_error_rad);
+    fit.mean_reference_signed_offset_m = mean(ref_offset);
+    fit.residual_to_fit_m = vector_stats(residual);
+end
+
+function write_traj_eval_summary_txt(summary_path, summary, traj_eval)
+    fid = fopen(summary_path, 'w');
+    if fid < 0
+        fprintf('[traj_eval] warning: could not write summary file %s\n', summary_path);
+        return;
+    end
+    cleaner = onCleanup(@() fclose(fid));
+
+    ref = traj_eval.reference;
+    fprintf(fid, 'TRAJ_EVAL rectilinear tracking summary\n');
+    fprintf(fid, 'session_dir: %s\n', traj_eval.session_dir);
+    fprintf(fid, 'samples_csv: %s\n', traj_eval.csv_path);
+    fprintf(fid, 'reference_nodes: %d -> %d\n', ref.anchor_node_ids(1), ref.anchor_node_ids(2));
+    fprintf(fid, 'reference_start_xy_m: %.6f, %.6f\n', ref.points_xy(1,1), ref.points_xy(1,2));
+    fprintf(fid, 'reference_end_xy_m: %.6f, %.6f\n', ref.points_xy(2,1), ref.points_xy(2,2));
+    fprintf(fid, 'reference_length_m: %.6f\n', summary.path_length_m);
+    fprintf(fid, 'reference_heading_deg: %.6f\n\n', summary.reference_heading_deg);
+
+    print_stats(fid, 'distance_to_rect_m', summary.distance_to_rect_m);
+    print_stats(fid, 'signed_cross_track_m', summary.signed_cross_track_m);
+    print_stats(fid, 'abs_cross_track_m', summary.abs_cross_track_m);
+    print_stats(fid, 'along_track_m', summary.along_track_m);
+    print_stats(fid, 'est_x_m', summary.est_x_m);
+    print_stats(fid, 'est_y_m', summary.est_y_m);
+
+    fprintf(fid, '\nround_start: %.0f\n', summary.round.start_round_id);
+    fprintf(fid, 'round_end: %.0f\n', summary.round.end_round_id);
+    fprintf(fid, 'relative_round_first: %.0f\n', summary.round.first_relative_round_idx);
+    fprintf(fid, 'relative_round_last: %.0f\n', summary.round.last_relative_round_idx);
+
+    fprintf(fid, '\nlinear_fit_heading_deg: %.6f\n', summary.linear_fit.heading_deg);
+    fprintf(fid, 'linear_fit_heading_error_deg: %.6f\n', summary.linear_fit.heading_error_deg);
+    fprintf(fid, 'linear_fit_mean_reference_signed_offset_m: %.6f\n', ...
+        summary.linear_fit.mean_reference_signed_offset_m);
+    print_stats(fid, 'linear_fit_residual_to_fit_m', summary.linear_fit.residual_to_fit_m);
+end
+
+function print_stats(fid, label, s)
+    fprintf(fid, '\n%s\n', label);
+    fprintf(fid, '  n: %.0f\n', s.n);
+    fprintf(fid, '  mean: %.6f\n', s.mean);
+    fprintf(fid, '  std: %.6f\n', s.std);
+    fprintf(fid, '  var: %.6f\n', s.var);
+    fprintf(fid, '  rmse: %.6f\n', s.rmse);
+    fprintf(fid, '  median: %.6f\n', s.median);
+    fprintf(fid, '  p95: %.6f\n', s.p95);
+    fprintf(fid, '  min: %.6f\n', s.min);
+    fprintf(fid, '  max: %.6f\n', s.max);
+end
+
+function write_traj_eval_summary_csv(summary_csv_path, summary)
+    fid = fopen(summary_csv_path, 'w');
+    if fid < 0
+        fprintf('[traj_eval] warning: could not write summary CSV %s\n', summary_csv_path);
+        return;
+    end
+    cleaner = onCleanup(@() fclose(fid));
+    fprintf(fid, ['sample_count,path_length_m,reference_heading_deg,' ...
+        'distance_mean_m,distance_std_m,distance_var_m2,distance_rmse_m,distance_median_m,distance_p95_m,distance_max_m,' ...
+        'signed_cross_mean_m,signed_cross_std_m,signed_cross_var_m2,' ...
+        'abs_cross_mean_m,abs_cross_std_m,abs_cross_p95_m,' ...
+        'fit_heading_deg,fit_heading_error_deg,fit_mean_reference_signed_offset_m,fit_residual_std_m\n']);
+    fprintf(fid, ['%.0f,%.9f,%.9f,' ...
+        '%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,' ...
+        '%.9f,%.9f,%.9f,' ...
+        '%.9f,%.9f,%.9f,' ...
+        '%.9f,%.9f,%.9f,%.9f\n'], ...
+        summary.sample_count, summary.path_length_m, summary.reference_heading_deg, ...
+        summary.distance_to_rect_m.mean, summary.distance_to_rect_m.std, summary.distance_to_rect_m.var, ...
+        summary.distance_to_rect_m.rmse, summary.distance_to_rect_m.median, summary.distance_to_rect_m.p95, ...
+        summary.distance_to_rect_m.max, ...
+        summary.signed_cross_track_m.mean, summary.signed_cross_track_m.std, summary.signed_cross_track_m.var, ...
+        summary.abs_cross_track_m.mean, summary.abs_cross_track_m.std, summary.abs_cross_track_m.p95, ...
+        summary.linear_fit.heading_deg, summary.linear_fit.heading_error_deg, ...
+        summary.linear_fit.mean_reference_signed_offset_m, summary.linear_fit.residual_to_fit_m.std);
+end
+
 function H = build_range_jacobian_unicycle(xk, anchors_xyz, z_fixed_m)
 %BUILD_RANGE_JACOBIAN_UNICYCLE Jacobian of range model wrt [px py theta v omega].
     n = size(anchors_xyz, 1);
@@ -543,6 +1163,28 @@ function H = build_range_jacobian_unicycle(xk, anchors_xyz, z_fixed_m)
 % columns 3,4,5 = 0 — no direct observability of theta, v, omega
 end
 
+function [x0, P0, info] = initialize_state_weighted( ...
+    s, map, addr_short, noise_map, bias_map, default_noise, z_fixed_m, cfg_init, ...
+    room_constraint, use_room_constraint, room_projection_threshold_m)
+%INITIALIZE_STATE_WEIGHTED
+% Wrapper that supports "single" and "multi" round initialization modes.
+    mode_str = 'single';
+    if isfield(cfg_init, 'mode') && strlength(string(cfg_init.mode)) > 0
+        mode_str = lower(char(string(cfg_init.mode)));
+    end
+
+    if strcmp(mode_str, 'multi')
+        [x0, P0, info] = initialize_state_weighted_multi_round( ...
+            s, map, addr_short, noise_map, bias_map, default_noise, z_fixed_m, cfg_init, ...
+            room_constraint, use_room_constraint, room_projection_threshold_m);
+        return;
+    end
+
+    [x0, P0, info] = initialize_state_weighted_single_round( ...
+        s, map, addr_short, noise_map, bias_map, default_noise, z_fixed_m, cfg_init, ...
+        room_constraint, use_room_constraint, room_projection_threshold_m);
+end
+
 function [x0, P0, info] = initialize_state_weighted_single_round( ...
     s, map, addr_short, noise_map, bias_map, default_noise, z_fixed_m, cfg_init, ...
     room_constraint, use_room_constraint, room_projection_threshold_m)
@@ -555,7 +1197,9 @@ function [x0, P0, info] = initialize_state_weighted_single_round( ...
     Pxy = [];
     mae = NaN;
 
+    last_attempt = 0;
     for attempt = 1:cfg_init.max_init_attempts
+        last_attempt = attempt;
         rr = collect_round_measurements_all( ...
             s, map, addr_short, noise_map, bias_map, default_noise);
 
@@ -586,9 +1230,9 @@ function [x0, P0, info] = initialize_state_weighted_single_round( ...
         end
     end
 
-    % With a single round there is no reliable motion-based heading yet.
-    theta0 = 0;
-    sigma_theta = cfg_init.initial_heading_std_rad;
+    % With one round, displacement-based heading is not available.
+    [theta0, sigma_theta, heading_source] = estimate_initial_heading_from_bootstrap( ...
+        xy(:).', xy(:).', cfg_init);
 
     if isempty(Pxy) || any(~isfinite(Pxy(:)))
         Pxy = cfg_init.min_xy_variance_m2 * eye(2);
@@ -604,6 +1248,198 @@ function [x0, P0, info] = initialize_state_weighted_single_round( ...
     info.raw_count = rr.raw_count;
     info.used_count = rr.used_count;
     info.mae_m = mae;
+    info.mode = "single";
+    info.accepted_rounds = 1;
+    info.total_attempts = last_attempt;
+    info.heading_source = heading_source;
+end
+
+function [x0, P0, info] = initialize_state_weighted_multi_round( ...
+    s, map, addr_short, noise_map, bias_map, default_noise, z_fixed_m, cfg_init, ...
+    room_constraint, use_room_constraint, room_projection_threshold_m)
+%INITIALIZE_STATE_WEIGHTED_MULTI_ROUND
+% Collect multiple rounds, solve WLS per round, reject outliers robustly,
+% and aggregate into a more stable x0/P0 estimate.
+    min_anchor_count = max(1, cfg_init.bootstrap_min_anchor_count);
+    min_valid_rounds = max(1, cfg_init.bootstrap_min_valid_rounds);
+    target_rounds = max(min_valid_rounds, cfg_init.bootstrap_target_rounds);
+
+    xy_all = zeros(0, 2);
+    mae_all = zeros(0, 1);
+    Pxy_all = zeros(2, 2, 0);
+    rr_last = struct('round_id', NaN, 'raw_count', 0, 'used_count', 0);
+    attempts_done = 0;
+
+    for attempt = 1:cfg_init.max_init_attempts
+        attempts_done = attempt;
+        rr = collect_round_measurements_all( ...
+            s, map, addr_short, noise_map, bias_map, default_noise);
+        rr_last = rr;
+
+        if rr.used_count < min_anchor_count
+            fprintf('[init] try %d/%d round=%d skipped used=%d (<%d)\n', ...
+                attempt, cfg_init.max_init_attempts, rr.round_id, rr.used_count, min_anchor_count);
+            continue;
+        end
+
+        [xy_i, Pxy_i, mae_i, ok_i] = weighted_trilateration_wls_all( ...
+            rr.anchors_xyz, rr.distances_m, rr.std_m, z_fixed_m, [], cfg_init.range_variance_distance_gain);
+
+        fprintf('[init] try %d/%d round=%d raw/used=%d/%d ok=%d mae=%.3f\n', ...
+            attempt, cfg_init.max_init_attempts, rr.round_id, rr.raw_count, rr.used_count, ok_i, mae_i);
+
+        if ~ok_i
+            continue;
+        end
+
+        xy_all(end+1, :) = xy_i(:).';
+        mae_all(end+1, 1) = mae_i;
+        Pxy_all(:, :, end+1) = Pxy_i;
+
+        if size(xy_all, 1) >= target_rounds
+            break;
+        end
+    end
+
+    n_valid = size(xy_all, 1);
+    if n_valid < min_valid_rounds
+        fprintf('[init] multi-round collected only %d valid rounds (min=%d), fallback to single-round\n', ...
+            n_valid, min_valid_rounds);
+        [x0, P0, info] = initialize_state_weighted_single_round( ...
+            s, map, addr_short, noise_map, bias_map, default_noise, z_fixed_m, cfg_init, ...
+            room_constraint, use_room_constraint, room_projection_threshold_m);
+        info.mode = "single_fallback";
+        info.accepted_rounds = n_valid;
+        info.total_attempts = attempts_done;
+        return;
+    end
+
+    inliers = bootstrap_inlier_mask(xy_all, mae_all, cfg_init);
+    if nnz(inliers) < min_valid_rounds
+        inliers = true(n_valid, 1);
+    end
+
+    idx_in = find(inliers);
+    xy_in = xy_all(idx_in, :);
+    mae_in = mae_all(idx_in);
+    Pxy_in = Pxy_all(:, :, idx_in);
+
+    cov_trace = squeeze(Pxy_in(1,1,:) + Pxy_in(2,2,:));
+    cov_trace = reshape(cov_trace, [], 1);
+    weights = 1 ./ max(cov_trace, cfg_init.min_xy_variance_m2);
+    weights = weights ./ max(mae_in, 0.05);
+    weights = weights ./ max(sum(weights), 1e-9);
+
+    xy = [sum(weights .* xy_in(:,1)); sum(weights .* xy_in(:,2))];
+    if use_room_constraint && ~isempty(room_constraint)
+        [xy_room, info_room] = apply_room_constraint(room_constraint, xy.', ...
+            'projection_threshold_m', room_projection_threshold_m, 'fallback_pose', xy.', 'label', 'main_new_init_multi');
+        if ~strcmp(info_room.action, 'reject')
+            xy = xy_room(:);
+            if strcmp(info_room.action, 'project')
+                fprintf('[room] init projected to free map (dist=%.2f m)\n', info_room.distance_to_free_m);
+            end
+        else
+            fprintf('[room] init rejected by map; keeping raw init\n');
+        end
+    end
+
+    % Weighted sample covariance + mean of per-round WLS covariance.
+    diffs = xy_in - xy(:).';
+    centered = diffs .* sqrt(weights);
+    cov_boot = centered.' * centered;
+    cov_wls = zeros(2,2);
+    for i = 1:numel(idx_in)
+        cov_wls = cov_wls + weights(i) * Pxy_in(:,:,i);
+    end
+    Pxy = cov_boot + cov_wls;
+    Pxy0 = 0.5 * (Pxy + Pxy.') + cfg_init.min_xy_variance_m2 * eye(2);
+    Pxy0 = 0.5 * (Pxy0 + Pxy0.');
+
+    [theta0, sigma_theta, heading_source] = estimate_initial_heading_from_bootstrap(xy_in, xy(:).', cfg_init);
+
+    x0 = [xy(1); xy(2); theta0; 0; 0];
+    P0 = blkdiag(Pxy0, sigma_theta^2, cfg_init.initial_speed_std_mps^2, cfg_init.initial_yaw_rate_std_radps^2);
+
+    mae_weighted = sum(weights .* mae_in);
+    info = struct();
+    info.round_id = rr_last.round_id;
+    info.raw_count = rr_last.raw_count;
+    info.used_count = rr_last.used_count;
+    info.mae_m = mae_weighted;
+    info.mode = "multi";
+    info.accepted_rounds = nnz(inliers);
+    info.total_attempts = attempts_done;
+    info.heading_source = heading_source;
+end
+
+function inliers = bootstrap_inlier_mask(xy_all, mae_all, cfg_init)
+%BOOTSTRAP_INLIER_MASK Robust inlier selection for multi-round init.
+    n = size(xy_all, 1);
+    if n == 0
+        inliers = false(0,1);
+        return;
+    end
+
+    mae_med = median(mae_all, 'omitnan');
+    mae_mad = median(abs(mae_all - mae_med), 'omitnan');
+    mae_gate = max(cfg_init.bootstrap_mae_gate_min_m, mae_med + cfg_init.bootstrap_mae_gate_k * max(mae_mad, 1e-6));
+    in_mae = abs(mae_all - mae_med) <= mae_gate;
+
+    xy_med = median(xy_all, 1, 'omitnan');
+    dx = abs(xy_all(:,1) - xy_med(1));
+    dy = abs(xy_all(:,2) - xy_med(2));
+    mad_x = median(dx, 'omitnan');
+    mad_y = median(dy, 'omitnan');
+    gate_x = max(cfg_init.bootstrap_xy_gate_min_m, cfg_init.bootstrap_xy_gate_k * max(mad_x, 1e-6));
+    gate_y = max(cfg_init.bootstrap_xy_gate_min_m, cfg_init.bootstrap_xy_gate_k * max(mad_y, 1e-6));
+    in_xy = (dx <= gate_x) & (dy <= gate_y);
+
+    inliers = in_mae & in_xy;
+    if nnz(inliers) < 2
+        inliers = true(n,1);
+    end
+end
+
+function [theta0, sigma_theta, source] = estimate_initial_heading_from_bootstrap(xy_track, xy_ref, cfg_init)
+%ESTIMATE_INITIAL_HEADING_FROM_BOOTSTRAP
+% Prefer displacement-based heading from bootstrap samples, then optional
+% corridor-axis fallback, then zero-heading fallback.
+    theta0 = 0;
+    sigma_theta = cfg_init.initial_heading_std_rad;
+    source = "fallback_zero";
+
+    if size(xy_track, 1) >= 2
+        dxy = xy_track(end, :) - xy_track(1, :);
+        span = norm(dxy);
+        if span >= cfg_init.bootstrap_min_heading_span_m
+            theta0 = atan2(dxy(2), dxy(1));
+            sigma_theta = max(cfg_init.bootstrap_heading_std_floor_rad, ...
+                cfg_init.initial_heading_std_rad / sqrt(size(xy_track, 1)));
+            source = "bootstrap_displacement";
+            return;
+        end
+    end
+
+    if isfield(cfg_init, 'enable_corridor_heading_fallback') && cfg_init.enable_corridor_heading_fallback && ...
+       isfield(cfg_init, 'corridor_segments_xyxy') && ~isempty(cfg_init.corridor_segments_xyxy)
+        in_atrium = false;
+        if isfield(cfg_init, 'disable_corridor_prior_in_atrium') && cfg_init.disable_corridor_prior_in_atrium && ...
+           isfield(cfg_init, 'atrium_polygon_xy') && ~isempty(cfg_init.atrium_polygon_xy)
+            poly = cfg_init.atrium_polygon_xy;
+            in_atrium = inpolygon(xy_ref(1), xy_ref(2), poly(:,1), poly(:,2));
+        end
+        if ~in_atrium
+            [in_corridor, theta_axis, ~, ~] = infer_corridor_axis_heading( ...
+                xy_ref(:).', 0.0, cfg_init.corridor_segments_xyxy, cfg_init.corridor_half_width_m);
+            if in_corridor
+                theta0 = theta_axis;
+                sigma_theta = min(cfg_init.initial_heading_std_rad, deg2rad(20));
+                source = "corridor_axis_fallback";
+                return;
+            end
+        end
+    end
 end
 
 function rr = collect_round_measurements_all( ...

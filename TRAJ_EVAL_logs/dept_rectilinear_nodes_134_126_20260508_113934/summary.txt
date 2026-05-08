@@ -1,0 +1,95 @@
+TRAJ_EVAL rectilinear tracking summary
+session_dir: C:\Users\frass\OneDrive\Desktop\UNI\Magistrale - Mechatronics Engineering - Unitn\Anno 5\Intelligent Distributed system\Project_UNTRACKED\repo_andre_WORKINGVERSION\TRAJ_EVAL_logs\dept_rectilinear_nodes_134_126_20260508_113934
+samples_csv: C:\Users\frass\OneDrive\Desktop\UNI\Magistrale - Mechatronics Engineering - Unitn\Anno 5\Intelligent Distributed system\Project_UNTRACKED\repo_andre_WORKINGVERSION\TRAJ_EVAL_logs\dept_rectilinear_nodes_134_126_20260508_113934\samples.csv
+reference_nodes: 134 -> 126
+reference_start_xy_m: 186.200000, 8.240000
+reference_end_xy_m: 184.220000, 21.260000
+reference_length_m: 13.169692
+reference_heading_deg: 98.646932
+
+
+distance_to_rect_m
+  n: 33
+  mean: 0.472630
+  std: 0.252879
+  var: 0.063948
+  rmse: 0.534219
+  median: 0.396826
+  p95: 0.983265
+  min: 0.114217
+  max: 1.053288
+
+signed_cross_track_m
+  n: 33
+  mean: -0.070961
+  std: 0.507181
+  var: 0.257232
+  rmse: 0.504453
+  median: 0.039044
+  p95: 0.546479
+  min: -1.053288
+  max: 0.641860
+
+abs_cross_track_m
+  n: 33
+  mean: 0.414006
+  std: 0.292690
+  var: 0.085668
+  rmse: 0.504453
+  median: 0.396826
+  p95: 0.983265
+  min: 0.039044
+  max: 1.053288
+
+along_track_m
+  n: 33
+  mean: 6.792473
+  std: 4.859175
+  var: 23.611584
+  rmse: 8.308657
+  median: 6.888585
+  p95: 13.169692
+  min: 0.000000
+  max: 13.169692
+
+est_x_m
+  n: 33
+  mean: 185.244833
+  std: 1.159962
+  var: 1.345512
+  rmse: 185.248355
+  median: 184.692565
+  p95: 186.997312
+  min: 184.007740
+  max: 187.132406
+
+est_y_m
+  n: 33
+  mean: 14.992934
+  std: 4.869878
+  var: 23.715711
+  rmse: 15.741192
+  median: 14.972781
+  p95: 21.625000
+  min: 7.990866
+  max: 21.625000
+
+round_start: 137
+round_end: 170
+relative_round_first: 0
+relative_round_last: 33
+
+linear_fit_heading_deg: 102.805916
+linear_fit_heading_error_deg: 4.158984
+linear_fit_mean_reference_signed_offset_m: -0.070961
+
+linear_fit_residual_to_fit_m
+  n: 33
+  mean: -0.000000
+  std: 0.356019
+  var: 0.126749
+  rmse: 0.350583
+  median: -0.010804
+  p95: 0.627634
+  min: -0.539974
+  max: 0.784484

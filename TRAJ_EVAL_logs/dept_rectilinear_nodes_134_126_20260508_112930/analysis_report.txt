@@ -1,0 +1,226 @@
+TRAJ_EVAL linear-regression analysis
+session_dir: C:\Users\frass\OneDrive\Desktop\UNI\Magistrale - Mechatronics Engineering - Unitn\Anno 5\Intelligent Distributed system\Project_UNTRACKED\repo_andre_WORKINGVERSION\TRAJ_EVAL_logs\dept_rectilinear_nodes_134_126_20260508_112930
+samples_csv: C:\Users\frass\OneDrive\Desktop\UNI\Magistrale - Mechatronics Engineering - Unitn\Anno 5\Intelligent Distributed system\Project_UNTRACKED\repo_andre_WORKINGVERSION\TRAJ_EVAL_logs\dept_rectilinear_nodes_134_126_20260508_112930\samples.csv
+ideal_reference: node 134 -> node 126
+ideal_start_xy_m: 186.200000, 8.240000
+ideal_end_xy_m: 184.220000, 21.260000
+ideal_length_m: 13.169692
+ideal_heading_deg: 98.646932
+selected_samples: 39
+
+reference_metrics_basis
+  HMM/UWB tracking papers: position RMSE over trajectory.
+  GPS-vs-UWB athlete tracking: MAE, SD, median, RMSE, CI, CDF percentiles.
+  UWB LT systems: average positioning error, MAE, standard deviation, latency/update-rate effects.
+  DTDoA/distributed UWB: axis-wise mean error, standard deviation, uncertainty and dynamic trajectory tests.
+
+distance_to_ideal_segment_m
+  n: 39
+  mean: 0.514431133
+  std: 0.286701172
+  var: 0.082197562
+  rmse: 0.587136546
+  mae: 0.514431133
+  median: 0.407591293
+  p50_abs: 0.407591293
+  p75_abs: 0.699388642
+  p90_abs: 0.928811114
+  p95_abs: 1.029285816
+  p99_abs: 1.091254228
+  mean_ci95_half_width: 0.089981502
+  mean_ci95_low: 0.424449632
+  mean_ci95_high: 0.604412635
+  min: 0.110443948
+  max: 1.097017065
+
+axis_error_x_m
+  n: 39
+  mean: 0.016641313
+  std: 0.537386122
+  var: 0.288783844
+  rmse: 0.530712788
+  mae: 0.436747502
+  median: -0.238122964
+  p50_abs: 0.295437122
+  p75_abs: 0.654098887
+  p90_abs: 0.895582749
+  p95_abs: 1.017586504
+  p99_abs: 1.079414453
+  mean_ci95_half_width: 0.168659269
+  mean_ci95_low: -0.152017957
+  mean_ci95_high: 0.185300582
+  min: -0.721115744
+  max: 1.085457402
+
+axis_error_y_m
+  n: 39
+  mean: 0.024399992
+  std: 0.253223331
+  var: 0.064122055
+  rmse: 0.251143902
+  mae: 0.163943985
+  median: -0.042328640
+  p50_abs: 0.061279393
+  p75_abs: 0.208124270
+  p90_abs: 0.615000000
+  p95_abs: 0.615000000
+  p99_abs: 0.615000000
+  mean_ci95_half_width: 0.079474442
+  mean_ci95_low: -0.055074450
+  mean_ci95_high: 0.103874434
+  min: -0.300570568
+  max: 0.615000000
+
+along_endpoint_error_m
+  n: 39
+  mean: 0.021620710
+  std: 0.270633802
+  var: 0.073242655
+  rmse: 0.268015099
+  mae: 0.137941453
+  median: -0.000000000
+  p50_abs: 0.000000000
+  p75_abs: 0.335837010
+  p90_abs: 0.622292435
+  p95_abs: 0.622292435
+  p99_abs: 0.622292435
+  mean_ci95_half_width: 0.084938739
+  mean_ci95_low: -0.063318029
+  mean_ci95_high: 0.106559448
+  min: -0.428603891
+  max: 0.622292435
+
+signed_cross_track_m
+  n: 39
+  mean: -0.020120582
+  std: 0.528831963
+  var: 0.279663245
+  rmse: 0.522395664
+  mae: 0.420791568
+  median: 0.240860692
+  p50_abs: 0.298833798
+  p75_abs: 0.641431724
+  p90_abs: 0.865840228
+  p95_abs: 1.026024594
+  p99_abs: 1.069459062
+  mean_ci95_half_width: 0.165974536
+  mean_ci95_low: -0.186095118
+  mean_ci95_high: 0.145853954
+  min: -1.081851705
+  max: 0.729406497
+
+abs_cross_track_m
+  n: 39
+  mean: 0.420791568
+  std: 0.313613732
+  var: 0.098353573
+  rmse: 0.522395664
+  mae: 0.420791568
+  median: 0.298833798
+  p50_abs: 0.298833798
+  p75_abs: 0.641431724
+  p90_abs: 0.865840228
+  p95_abs: 1.026024594
+  p99_abs: 1.069459062
+  mean_ci95_half_width: 0.098428040
+  mean_ci95_low: 0.322363527
+  mean_ci95_high: 0.519219608
+  min: 0.001457893
+  max: 1.081851705
+
+tls_orthogonal_residual_m
+  n: 39
+  mean: -0.000000000
+  std: 0.435694884
+  var: 0.189830032
+  rmse: 0.430072779
+  mae: 0.363716943
+  median: 0.031840796
+  p50_abs: 0.294990893
+  p75_abs: 0.469829184
+  p90_abs: 0.677383294
+  p95_abs: 0.813124133
+  p99_abs: 0.905258205
+  mean_ci95_half_width: 0.136743354
+  mean_ci95_low: -0.136743354
+  mean_ci95_high: 0.136743354
+  min: -0.733880144
+  max: 0.925819015
+
+path_quality
+  path_length_m: 15.647291648
+  net_displacement_m: 14.157271286
+  ideal_covered_length_m: 13.169692479
+  path_length_ratio_to_ideal_covered: 1.188128855
+  straightness_ratio: 0.904774552
+  sinuosity_ratio: 1.105247709
+  backtrack_step_count: 4
+  backtrack_distance_m: 0.077153135
+  overshoot_before_start_m: 0.428603891
+  overshoot_after_end_m: 0.622292435
+
+timing_update_rate
+  available: 1
+  duration_s: 19.000000000
+  effective_update_rate_hz: 2.000000000
+  mean_speed_mps: 0.823541666
+
+sample_period_s
+  n: 38
+  mean: 0.500000000
+  std: 0.000000000
+  var: 0.000000000
+  rmse: 0.500000000
+  mae: 0.500000000
+  median: 0.500000000
+  p50_abs: 0.500000000
+  p75_abs: 0.500000000
+  p90_abs: 0.500000000
+  p95_abs: 0.500000000
+  p99_abs: 0.500000000
+  mean_ci95_half_width: 0.000000000
+  mean_ci95_low: 0.500000000
+  mean_ci95_high: 0.500000000
+  min: 0.500000000
+  max: 0.500000000
+
+covariance_scale_diagnostic
+  available: 1
+  sample_count: 39
+  mean_predicted_sigma_x_m: 0.048622745
+  mean_predicted_sigma_y_m: 0.038420684
+  mean_predicted_radial_sigma_m: 0.062290106
+  note: ratio uses closest point on the ideal segment, not time-aligned ground truth.
+
+position_error_over_predicted_radial_sigma
+  n: 39
+  mean: 12.527388956
+  std: 9.551459254
+  var: 91.230373871
+  rmse: 15.678858618
+  mae: 12.527388956
+  median: 8.570923263
+  p50_abs: 8.570923263
+  p75_abs: 18.305415986
+  p90_abs: 26.705375473
+  p95_abs: 31.127247266
+  p99_abs: 35.416653451
+  mean_ci95_half_width: 2.997736771
+  mean_ci95_low: 9.529652185
+  mean_ci95_high: 15.525125728
+  min: 0.778491004
+  max: 35.801610007
+
+ordinary_least_squares
+  model: x_on_y
+  beta0: 188.337127819
+  beta1: -0.211478948
+  heading_deg: 101.940913327
+  heading_error_deg: 3.293981619
+  r2: 0.848607235
+
+total_least_squares
+  heading_deg: 102.030112717
+  heading_error_deg: 3.383181009
+  residual_std_m: 0.435694884
+  residual_rmse_m: 0.430072779
