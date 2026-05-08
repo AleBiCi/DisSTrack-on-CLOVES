@@ -3,6 +3,17 @@
 
 # Python .venv
 .venv/
+venv/
 
 # Matlab autosave files
 *.asv
+
+# Binary files
+*.bin
+
+# Node builds folders
+build_nodes/
+
+# Variance logs directory
+logs_varianza_v2/
+
