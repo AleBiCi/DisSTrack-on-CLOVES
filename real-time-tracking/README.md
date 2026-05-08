@@ -1,297 +1,208 @@
 # Real-Time Tracking Firmware
 
-Questo folder contiene i due firmware flashati sulle schede EVB1000 per il tracking realtime:
+This directory contains the EVB1000 firmware and deployment utilities used for the real-time
+CLOVES UWB tracking experiments. The firmware implements a round-based SS-TWR protocol:
+one mobile tag broadcasts an initiation packet, anchors reply in scheduled slots, and the tag
+computes ranges and emits a structured serial stream for MATLAB.
 
-- `rng-init-all.bin`: firmware del `tag`
-- `rng-resp.bin`: firmware delle `ancore`
+## Scope
 
-Le sorgenti principali sono:
+The firmware layer provides distributed range acquisition. It does not run the EKF; it
+supplies calibrated, round-consistent range observations to the MATLAB tracker. The two main
+firmware roles are:
 
-- `rng-init-all.c`
-- `rng-resp.c`
-- `generate_and_build_all.py`
-- `rng-support.h`
-- `rng-support.c`
+- `rng-init-all.c`: mobile tag / initiator firmware;
+- `rng-resp.c`: fixed anchor / responder firmware.
 
-## Idea generale
+The support generator `generate_and_build_all.py` rebuilds anchor-slot metadata and shared
+radio support files from the current deployment map before compiling binaries.
 
-Il sistema lavora a round.
+## Requirements
 
-1. Il `tag` invia un pacchetto `INIT` in broadcast.
-2. Ogni `ancora` che riceve l'`INIT` risponde nel proprio slot temporale.
-3. Il `tag` ascolta tutta la finestra del round, raccoglie le risposte, calcola la distanza e valuta la qualità del segnale.
-4. Il `tag` manda tutto su seriale verso `MATLAB`.
+- Decawave/Qorvo EVB1000 nodes with DW1000 UWB radios.
+- Contiki/UWB toolchain compatible with `Makefile.uwb`.
+- `make` and the cross-compiler required by the EVB1000 target.
+- Python 3 for the generator script.
+- CLOVES testbed credentials and access for remote responder deployment.
+- Python dependencies for the bundled testbed client:
 
-In questo modo:
-
-- il tag è la scheda collegata via USB al PC;
-- le ancore non parlano tra loro;
-- `MATLAB` legge solo la seriale del tag.
-
-## File `rng-init-all.c`
-
-Questo è il firmware del `tag`.
-
-### Cosa fa
-
-- inizializza il DW1000;
-- ogni `0.5 s` avvia un nuovo round di ranging;
-- costruisce e trasmette un pacchetto `INIT` broadcast;
-- apre una finestra RX abbastanza lunga da ricevere tutte le `RESP` delle ancore;
-- per ogni risposta valida:
-  - legge i timestamp SS-TWR;
-  - calcola il `time of flight`;
-  - converte il risultato in distanza;
-  - legge le metriche di qualità arrivate dall'ancora;
-  - decide se la misura è `LOS` o `NLOS`;
-  - tiene una sola misura per ancora nel round;
-- stampa su seriale le misure del round.
-
-### Come calcola la distanza
-
-Il tag usa il classico schema `SS-TWR`:
-
-- `init_tx_ts`: quando il tag ha trasmesso `INIT`
-- `init_rx_ts`: quando l'ancora ha ricevuto `INIT`
-- `resp_tx_ts`: quando l'ancora ha trasmesso `RESP`
-- `resp_rx_ts`: quando il tag ha ricevuto `RESP`
-
-Da questi quattro tempi ricava il `TOF` e poi la distanza:
-
-- `dist_m = tof * SPEED_OF_LIGHT`
-- `dist_mm = round(dist_m * 1000)`
-
-### Filtri sul tag
-
-Il tag fa già un primo filtro locale prima di mandare i dati a MATLAB.
-
-#### 1. Hard gating sulla distanza
-
-Scarta misure fisicamente improbabili:
-
-- `dist_m < -0.10`
-- `dist_m > 20.0`
-
-Se la distanza è solo leggermente negativa per rumore numerico, la forza a `0`.
-
-#### 2. Quality filtering radio
-
-Per ogni `RESP`, il tag calcola una misura di qualità chiamata qui `FP-RX`:
-
-- usa `fp_amp1`, `fp_amp2`, `fp_amp3`
-- usa `rx_pream`
-- usa `cir_max`
-
-L'idea è:
-
-- se il primo path è coerente con l'energia totale ricevuta, la misura è più probabilmente `LOS`;
-- se invece domina il multipath, la misura è più probabilmente `NLOS`.
-
-Le soglie usate sono:
-
-- `FP_RX_DIFF_MIN = -6 dB`
-- `MIN_PREAM_COUNT = 80`
-
-Una misura viene marcata `LOS` se:
-
-- `rx_pream >= MIN_PREAM_COUNT`
-- `fp_rx_diff >= FP_RX_DIFF_MIN`
-
-altrimenti viene marcata `NLOS`.
-
-#### 3. Deduplica per ancora
-
-Nel round il tag tiene una sola misura per ancora.
-
-Se arrivano due misure della stessa ancora, conserva quella migliore secondo questo ordine:
-
-1. `LOS` batte `NLOS`
-2. `QUAL` più alta batte `QUAL` più bassa
-3. `pream` più alto batte `pream` più basso
-
-### Output seriale del tag
-
-Per ogni ancora usata nel round stampa una riga:
-
-```text
-RANGING MEAS [round] [tag->anchor] distanza_mm QUAL qual_x10 pream FLAG LOS/NLOS
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r cloves-client/requirements.txt
 ```
 
-Esempio:
+When the firmware directory is not inside the Contiki/UWB tree, export `UWB_CONTIKI` before
+building:
+
+```bash
+export UWB_CONTIKI=/path/to/contiki-uwb
+```
+
+## Experimental Setup
+
+The current real-time deployment targets the Department layout used in the project report.
+The active tracking anchors are node `108`, nodes `113:119`, and nodes `121:154`. Their UWB
+short addresses and responder slots are generated into `anchor_table.h`.
+
+The protocol is round-based:
+
+1. The tag broadcasts an `INIT` frame.
+2. Each anchor receives the `INIT` frame and schedules one delayed `RESP` frame in its slot.
+3. The tag listens for the full response window.
+4. For each valid response, the tag computes SS-TWR time of flight and converts it to range.
+5. The tag reads DW1000 diagnostics, applies quality checks, deduplicates repeated anchors,
+   and prints one serial stream per round.
+
+The timing constants currently generated are:
+
+- `ANCHOR_STEP_UUS = 2000`
+- `PER_ANCHOR_TIMEOUT_UUS = 6000`
+- `WINDOW_MARGIN_UUS = 3000`
+
+The MATLAB runtime assumes a round period of `0.5 s`, so firmware timing and MATLAB sampling
+should be kept consistent.
+
+## Firmware Filtering
+
+The tag applies an initial quality layer before forwarding data to MATLAB:
+
+- physically implausible distances are rejected;
+- slightly negative numerical ranges are clamped to zero;
+- responses are labelled as LOS or NLOS using first-path and preamble diagnostics;
+- duplicate responses from the same anchor are reduced to the best observation.
+
+The duplicate-selection priority is:
+
+1. LOS measurements over NLOS measurements;
+2. higher quality score;
+3. higher preamble count.
+
+This filtering is intentionally conservative: MATLAB still performs calibration-based
+weighting and map-aware state validation, but clearly corrupted radio observations should be
+removed as early as possible.
+
+## Serial Output Format
+
+Each accepted measurement is printed as:
+
+```text
+RANGING MEAS [round] [tag->anchor] distance_mm QUAL qual_x10 pream FLAG LOS/NLOS
+```
+
+Example:
 
 ```text
 RANGING MEAS [211] [54:33->5b:2a] 8276 mm QUAL -41 118 FLAG LOS
 ```
 
-Alla fine del round stampa anche un riepilogo:
+At the end of each round, the tag prints a summary:
 
 ```text
 [211] round: 8 meas | 5 LOS | 3 NLOS | 24 timeout | 8 dup
 ```
 
-Significato dei campi:
+MATLAB uses these lines to reconstruct complete rounds and associate each distance with the
+correct anchor coordinates.
 
-- `meas`: numero di ancore uniche conservate nel round
-- `LOS`: misure accettate come buone dal filtro radio del tag
-- `NLOS`: misure viste ma marcate come scarse
-- `timeout`: slot in cui non è arrivata una risposta utile
-- `dup`: risposte duplicate della stessa ancora
+## How to Run
 
-## File `rng-resp.c`
+### 1. Generate Support Files and Build Binaries
 
-Questo è il firmware delle `ancore`.
+Run the generator from this directory:
 
-### Cosa fa
-
-- resta in ascolto continuo;
-- riceve i pacchetti `INIT`;
-- accetta sia `INIT` diretti sia `INIT` broadcast;
-- legge subito le diagnostiche del DW1000 dopo la ricezione;
-- prepara la `RESP`;
-- la trasmette con ritardo programmato nel proprio slot.
-
-### Perché usa gli slot
-
-Tutte le ancore ricevono lo stesso `INIT` broadcast.
-
-Se rispondessero subito tutte insieme, le risposte colliderebbero.
-
-Per evitarlo, ogni ancora usa uno slot diverso definito in `anchor_table.h`.
-
-La funzione chiave è:
-
-- `get_resp_delay_from_table(linkaddr_node_addr)`
-
-che restituisce il ritardo di trasmissione della `RESP`.
-
-### Cosa mette dentro la `RESP`
-
-La `RESP` contiene:
-
-- header IEEE 802.15.4
-- `init_rx_ts`
-- `resp_tx_ts`
-- metriche radio:
-  - `fp_amp1`
-  - `fp_amp2`
-  - `fp_amp3`
-  - `rx_pream`
-  - `cir_max`
-  - `std_noise`
-
-Queste metriche sono lette da:
-
-- `dwt_readdiagnostics(&diag)`
-
-e vengono copiate nel pacchetto prima della trasmissione.
-
-In pratica:
-
-- l'ancora non decide lei la distanza finale;
-- l'ancora fornisce al tag i timestamp e gli indicatori di qualità;
-- il tag fa la stima finale e il filtraggio.
-
-## Protocollo `INIT -> RESP`
-
-### `INIT`
-
-Il pacchetto `INIT` contiene solo l'header.
-
-Serve per:
-
-- identificare il tag che ha iniziato il round;
-- portare il `sequence number` del round;
-- dire alle ancore a chi dovranno rispondere.
-
-### `RESP`
-
-Il pacchetto `RESP` viene mandato dall'ancora al tag e contiene:
-
-- i due timestamp necessari al ranging;
-- le metriche di qualità del segnale.
-
-Il `sequence number` della `RESP` è lo stesso dell'`INIT`, così il tag capisce a quale round appartiene.
-
-## File `anchor_table.h`
-
-`anchor_table.h` viene generato automaticamente da:
-
-- `generate_and_build_all.py`
-
-e contiene:
-
-- l'elenco delle ancore usate nel tracking;
-- lo slot assegnato a ciascuna ancora;
-- i parametri temporali del round.
-
-I parametri principali usati dallo script sono:
-
-- `ANCHOR_STEP_UUS = 500`
-- `PER_ANCHOR_TIMEOUT_UUS = 700`
-- `WINDOW_MARGIN_UUS = 1500`
-
-Quindi il round totale dipende dal numero di ancore attive.
-
-## File `generate_and_build_all.py`
-
-Questo script:
-
-- legge `DEPT_evb1000_map.csv`
-- legge `variance_per_node.csv`
-- seleziona le ancore richieste per il tracking
-- genera `anchor_table.h`
-- genera `rng-support.h`
-- genera `rng-support.c`
-- compila i binari
-- copia i `.bin` nella cartella `bins`
-
-Scelta importante del progetto:
-
-- non sovrascrive `rng-init-all.c`
-- non sovrascrive `rng-resp.c`
-
-perché questi due file contengono la logica custom del protocollo realtime.
-
-## Cosa flashare
-
-### Tag
-
-Sul tag va flashato:
-
-- `bins/rng-init-all.bin`
-
-Questo tag deve essere collegato via USB al PC, perché la sua seriale è quella letta da MATLAB.
-
-### Ancore
-
-Sulle ancore va flashato:
-
-- `bins/rng-resp.bin`
-
-Le ancore fanno solo da responder e non parlano direttamente con MATLAB.
-
-## Collegamento con MATLAB
-
-`MATLAB` non legge le ancore.
-
-Legge solo la seriale del tag, cioè le righe:
-
-- `RANGING MEAS ...`
-- `[round] round: ...`
-
-Quindi la catena completa è:
-
-```text
-Tag INIT broadcast
--> Ancore RESP in slot
--> Tag calcola distanza + qualità
--> Tag stampa su seriale
--> MATLAB legge la seriale
+```bash
+python3 generate_and_build_all.py
 ```
 
-## Riassunto rapido
+The script:
 
-- `rng-init-all` = firmware del tag, fa ranging e manda i dati al PC
-- `rng-resp` = firmware delle ancore, risponde all'INIT nel proprio slot
-- il filtro qualità principale nasce già sul tag
-- MATLAB lavora sui dati che il tag ha già aggregato e formattato
+- reads `DEPT_evb1000_map.csv`;
+- reads `variance_per_node.csv` when available;
+- selects the configured tracking anchors;
+- writes `anchor_table.h`;
+- writes `rng-support.h` and `rng-support.c`;
+- builds `rng-init-all` and `rng-resp`;
+- copies the resulting binaries into `bins/`.
+
+Expected outputs include:
+
+```text
+bins/rng-init-all.bin
+bins/rng-resp.bin
+```
+
+### 2. Deploy the Anchor Responders
+
+Validate the CLOVES job file:
+
+```bash
+python3 cloves-client/iot_testbed_client.py validate experiment.json
+```
+
+Schedule it as soon as possible:
+
+```bash
+python3 cloves-client/iot_testbed_client.py schedule --asap experiment.json
+```
+
+Before scheduling, ensure that the `bin_file` entry in `experiment.json` points to the
+responder binary location used for the run. The provided JSON lists the Department anchor set
+and may need to be adapted when testing a reduced subset or a different layout.
+
+### 3. Flash the Mobile Tag
+
+Flash the initiator binary on the mobile EVB1000 tag:
+
+```text
+bins/rng-init-all.bin
+```
+
+Keep this tag connected to the host computer via USB. The MATLAB tracker reads only the tag
+serial stream; anchors do not communicate directly with MATLAB.
+
+### 4. Start Host-Side Tracking
+
+After the responders are active and the tag is connected, run the corresponding MATLAB
+script from `Matlab_Sim/`:
+
+```matlab
+main_dept
+```
+
+or, for the Hall baseline:
+
+```matlab
+main_hall
+```
+
+## Results
+
+The firmware layer successfully provides grouped multi-anchor rounds for the MATLAB EKF. In
+well-covered regions, several anchors are available per round and the host estimator receives
+enough information for continuous correction. In weaker corridor regions, timeouts and NLOS
+labels become more frequent; the serial summaries make this degradation visible and allow the
+host tracker to fall back to prediction or map-based rejection when required.
+
+The main practical benefit of the firmware design is that the tag exports a compact,
+round-consistent stream rather than independent asynchronous samples. This reduces ambiguity
+in the estimator and makes each EKF update correspond to a coherent acquisition instant.
+
+Current limitations include dependence on correct slot generation, sensitivity to anchor
+visibility, and the need to keep the firmware anchor set synchronized with MATLAB maps and
+variance tables.
+
+## File Guide
+
+- `rng-init-all.c`: initiator/tag firmware; computes ranges and writes serial output.
+- `rng-resp.c`: responder/anchor firmware; replies in scheduled slots with timestamps and
+  radio diagnostics.
+- `generate_and_build_all.py`: support-file generation and build orchestration.
+- `anchor_table.h`: generated anchor address and slot table.
+- `rng-support.c`, `rng-support.h`: generated DW1000 helper routines and packet structures.
+- `project-conf.h`: Contiki/DW1000 radio configuration.
+- `Makefile`: EVB1000 build target configuration.
+- `experiment.json`: CLOVES job file for deploying responder firmware to anchors.
+- `experiment_debug_stable.json`: reduced responder set used for debugging.
+- `variance_per_node.csv`: calibration statistics used by the generator and MATLAB pipeline.
+- `cloves-client/`: local copy of the CLOVES testbed command-line client.
