@@ -338,26 +338,40 @@ while true
     end
     % end pseudo-measurement 
 
-    % EKF Update (works for both single-anchor and multi-anchor rounds)
+    % EKF range update.
+    % A round can contain one or more anchor ranges. With one anchor, the
+    % update only constrains the state along that anchor's range direction;
+    % with multiple anchors, all valid ranges are fused in the same EKF step.
     if used_count >= 1 && ~isempty(rr.anchors_xyz) && size(rr.anchors_xyz, 1) == length(rr.distances_m)
         z_k = rr.distances_m(:);
         h_k = h_range(x_pred, rr.anchors_xyz);
         H_k = H_range(x_pred, rr.anchors_xyz);
         % CRITICAL CHECK: Ensure H_k dimensions match [Measurements x States]
         if size(H_k, 1) == length(z_k) && size(H_k, 2) == 5
+            % Measurement covariance. sigma2_used comes from the per-anchor
+            % noise map plus the distance-dependent variance term. The
+            % diagonal form assumes independent range errors between anchors.
             R_k = diag(sigma2_used);
             innov_k = z_k - h_k;
+            % Innovation covariance. Symmetrization removes tiny numerical
+            % asymmetries before solving for the Kalman gain.
             S_k = H_k * P_pred * H_k.' + R_k;
             S_k = 0.5 * (S_k + S_k.');
         else
+            % If the measurement Jacobian is inconsistent, skip the range
+            % correction and keep the prediction for this round.
             used_count = 0;
         end
 
         if used_count == 1
+            % Scalar update for a single range measurement. This avoids a
+            % matrix solve and guards against division by an almost-zero S.
             S_scalar = S_k(1,1);
             S_scalar = max(S_scalar, 1e-9);
             K_k = (P_pred * H_k.') / S_scalar;
         else
+            % Multi-range update. Poor geometry or nearly redundant anchors can
+            % make S_k ill-conditioned, so fall back to a pseudoinverse.
             if rcond(S_k) < 1e-10
                 S_inv = pinv(S_k);
                 K_k = P_pred * H_k.' * S_inv;
@@ -367,17 +381,26 @@ while true
         end
 
         x_upd = x_pred + K_k * innov_k;
+        % Joseph-form covariance update, used for better numerical stability
+        % and to preserve positive semidefiniteness in finite precision.
         P_upd = (I5 - K_k * H_k) * P_pred * (I5 - K_k * H_k).' + K_k * R_k * K_k.';
         mode_str = "update";
     else
+        % No usable range data in this round: run prediction-only.
         x_upd = x_pred;
         P_upd = P_pred;
     end
 
+    % Room/map constraint.
+    % This is a geometric post-filter applied after the EKF range update. It
+    % is not another stochastic measurement in R_k; instead, it enforces that
+    % the estimated position remains inside the free-space model.
     if room_constraint_on_update && ~isempty(room_constraint)
         [xy_upd_room, info_upd_room] = apply_room_constraint(room_constraint, x_upd(1:2).', ...
             'projection_threshold_m', room_projection_threshold_m, 'fallback_pose', x_pred(1:2).', 'label', 'main_new_update');
         if strcmp(info_upd_room.action, 'project')
+            % Close to the valid map: snap x/y to the nearest feasible point
+            % and inflate the planar covariance to acknowledge the correction.
             x_upd(1:2) = xy_upd_room(:);
             P_upd(1:2,1:2) = P_upd(1:2,1:2) + (0.10^2) * eye(2);
             mode_str = "map_project";
@@ -385,6 +408,8 @@ while true
             fprintf('[room] round %d update projected (dist=%.2f m, thr=%.2f m)\n', ...
                 rr.round_id, info_upd_room.distance_to_free_m, room_projection_threshold_m);
         elseif strcmp(info_upd_room.action, 'reject')
+            % Too far outside the valid map: discard the measurement-updated
+            % pose and keep the prediction as the safest state for this round.
             x_upd = x_pred;
             P_upd = P_pred;
             mode_str = "map_reject";
@@ -463,24 +488,24 @@ map_gif_recorder('prompt_save', gif_recorder);
 
 %% Local functions
 function H = build_range_jacobian_unicycle(xk, anchors_xyz, z_fixed_m)
-%BUILD_RANGE_JACOBIAN_UNICYCLE Jacobian of range model wrt [px py theta v omega].
+%BUILD_RANGE_JACOBIAN_UNICYCLE Linearized range model wrt [px py theta v omega].
     n = size(anchors_xyz, 1);
     H = zeros(n, 5);
     dx = xk(1) - anchors_xyz(:,1);
     dy = xk(2) - anchors_xyz(:,2);
     dz = z_fixed_m - anchors_xyz(:,3);
     rr = sqrt(dx.^2 + dy.^2 + dz.^2);
+    % Avoid division by zero if the estimate is exactly at an anchor.
     rr = max(rr, 1e-6);
     H(:,1) = dx ./ rr;   % d(range)/d(px)
     H(:,2) = dy ./ rr;   % d(range)/d(py)
-% columns 3,4,5 = 0 — no direct observability of theta, v, omega
+    % theta, v, omega have no direct range derivative.
 end
 
 function [x0, P0, info] = initialize_state_weighted_single_round( ...
     s, map, addr_short, noise_map, bias_map, default_noise, z_fixed_m, cfg_init, ...
     room_constraint, use_room_constraint, room_projection_threshold_m)
-%INITIALIZE_STATE_WEIGHTED_SINGLE_ROUND
-% Collect the first valid round and compute x0/P0 from one weighted trilateration using all valid anchor measurements.
+%INITIALIZE_STATE_WEIGHTED_SINGLE_ROUND Build x0/P0 from the first usable round.
     ok = false;
     rr = struct('round_id', NaN, 'raw_count', 0, 'used_count', 0, ...
         'anchors_xyz', zeros(0,3), 'distances_m', zeros(0,1), 'std_m', zeros(0,1));
@@ -489,6 +514,7 @@ function [x0, P0, info] = initialize_state_weighted_single_round( ...
     mae = NaN;
 
     for attempt = 1:cfg_init.max_init_attempts
+        % Serial data can arrive incomplete; retry until WLS returns a finite pose.
         rr = collect_round_measurements_all( ...
             s, map, addr_short, noise_map, bias_map, default_noise);
 
@@ -507,6 +533,7 @@ function [x0, P0, info] = initialize_state_weighted_single_round( ...
     end
 
     if use_room_constraint && ~isempty(room_constraint)
+        % The initializer can start outside free space; project only if close.
         [xy_room, info_room] = apply_room_constraint(room_constraint, xy.', ...
             'projection_threshold_m', room_projection_threshold_m, 'fallback_pose', xy.', 'label', 'main_new_init_single');
         if ~strcmp(info_room.action, 'reject')
@@ -524,8 +551,10 @@ function [x0, P0, info] = initialize_state_weighted_single_round( ...
     sigma_theta = cfg_init.initial_heading_std_rad;
 
     if isempty(Pxy) || any(~isfinite(Pxy(:)))
+        % WLS can fail to produce covariance with poor anchor geometry.
         Pxy = cfg_init.min_xy_variance_m2 * eye(2);
     end
+    % Symmetrize and add a floor so the EKF does not start overconfident.
     Pxy0 = 0.5 * (Pxy + Pxy.') + cfg_init.min_xy_variance_m2 * eye(2);
     Pxy0 = 0.5 * (Pxy0 + Pxy0.');
 
@@ -541,20 +570,21 @@ end
 
 function rr = collect_round_measurements_all( ...
     s, map, addr_short, noise_map, bias_map, default_noise, stop_handle)
-%COLLECT_ROUND_MEASUREMENTS_ALL
-% Keep all measurements from all available anchors for the current round.
+%COLLECT_ROUND_MEASUREMENTS_ALL Return one complete round with all anchors.
     if nargin < 7
         stop_handle = [];
     end
 
     while true
         if ~isempty(stop_handle) && ~isgraphics(stop_handle)
+            % The plot was closed while blocking on serial input.
             rr = [];
             return;
         end
 
         [round_meas, round_id] = read_single_round(s, map, addr_short, noise_map, bias_map, default_noise);
         if isempty(round_meas)
+            % No complete measurement yet; avoid spinning at full CPU.
             pause(0.01);
             continue;
         end
@@ -576,10 +606,8 @@ function [round_meas, round_id] = read_single_round(s, map, addr_short, noise_ma
     round_meas = empty_round_meas();
     round_id = NaN;
     
-    % Render this function more robust by checking if we're reading from an
-    % empty raw line
     try
-        % Use a very short check to see if bytes are actually available
+        % Nonblocking guard: return if the serial buffer has no full line yet.
         if s.NumBytesAvailable == 0
             return; 
         end
@@ -590,6 +618,7 @@ function [round_meas, round_id] = read_single_round(s, map, addr_short, noise_ma
     end
 
     if isempty(raw_line) || strlength(raw_line) == 0
+        % Ignore keepalive/blank lines before entering the round parser.
         return;
     end
 
@@ -601,12 +630,14 @@ function [round_meas, round_id] = read_single_round(s, map, addr_short, noise_ma
             if isnan(round_id)
                 round_id = meas.round_id;
             elseif meas.round_id ~= round_id
+                % New round before a summary: drop the partial old round.
                 round_id = meas.round_id;
                 round_meas = empty_round_meas();
             end
 
             idx_map = find(strcmpi(addr_short, meas.addr), 1);
             if isempty(idx_map)
+                % Measurement from a node not present in the selected map.
                 continue;
             end
 
@@ -623,6 +654,7 @@ function [round_meas, round_id] = read_single_round(s, map, addr_short, noise_ma
                 meas_bias = 0.0;
             end
 
+            % Store bias-corrected range plus per-anchor std for R_k.
             entry = struct( ...
                 'addr', meas.addr, ...
                 'dist_m', meas.dist_m - meas_bias, ...
@@ -646,6 +678,7 @@ function [round_meas, round_id] = read_single_round(s, map, addr_short, noise_ma
                 round_id = summary.round_id;
             end
             if summary.round_id >= round_id
+                % Summary marks the end of this round in both log formats.
                 return;
             end
         end
@@ -653,11 +686,12 @@ function [round_meas, round_id] = read_single_round(s, map, addr_short, noise_ma
 end
 
 function meas = empty_round_meas()
+%EMPTY_ROUND_MEAS Typed empty struct for easy end+1 appends.
     meas = struct('addr', {}, 'dist_m', {}, 'noise', {}, 'x', {}, 'y', {}, 'z', {});
 end
 
 function tf = should_replace_measurement(new_meas, old_meas)
-%SHOULD_REPLACE_MEASUREMENT Keep the newest sample for duplicated anchor. 
+%SHOULD_REPLACE_MEASUREMENT Keep the newest duplicate anchor sample.
     tf = true;
 end
 
@@ -667,6 +701,7 @@ function [is_meas, meas] = parse_ranging_meas(line)
         '(?<dist>\d+)\s+mm'];
     tok = regexp(char(line), expr, 'names');
     if isempty(tok)
+        % Caller treats non-measurement lines as possible round summaries.
         is_meas = false;
         meas = struct('round_id', NaN, 'addr', '', 'dist_m', NaN);
         return;
@@ -680,7 +715,7 @@ function [is_meas, meas] = parse_ranging_meas(line)
 end
 
 function summary = parse_round_summary(line)
-%PARSE_ROUND_SUMMARY Parse round boundary line.
+%PARSE_ROUND_SUMMARY Parse either supported round-boundary format.
     summary = struct('round_id', NaN);
     tok = regexp(char(line), ...
         '^\[(?<round>\d+)\]\s+round:\s+(?<meas>\d+)\s+meas', 'names');
@@ -695,9 +730,7 @@ function summary = parse_round_summary(line)
 end
 
 function [xy, Pxy, mae, ok] = weighted_trilateration_wls_all(anchors_xyz, distances_m, std_m, z_fixed_m, x0, distance_variance_gain)
-%WEIGHTED_TRILATERATION_WLS_ALL
-% Weighted Gauss-Newton on all available valid measurements:
-% min_x sum_i ( (h_i(x)-d_i)^2 / sigma_i^2 )
+%WEIGHTED_TRILATERATION_WLS_ALL Weighted Gauss-Newton range trilateration.
     xy = [NaN; NaN];
     Pxy = [];
     mae = NaN;
@@ -705,6 +738,7 @@ function [xy, Pxy, mae, ok] = weighted_trilateration_wls_all(anchors_xyz, distan
 
     n = size(anchors_xyz, 1);
     if n < 1
+        % No anchors means no geometric information.
         return;
     end
 
@@ -712,6 +746,7 @@ function [xy, Pxy, mae, ok] = weighted_trilateration_wls_all(anchors_xyz, distan
     W = diag(1 ./ sigma2);
 
     if isempty(x0) || any(~isfinite(x0))
+        % Use the noise-weighted anchor centroid when no prior pose is available.
         weights = 1 ./ sigma2;
         weights = weights / sum(weights);
         xk = [sum(weights .* anchors_xyz(:,1)); sum(weights .* anchors_xyz(:,2))];
@@ -725,6 +760,7 @@ function [xy, Pxy, mae, ok] = weighted_trilateration_wls_all(anchors_xyz, distan
         dy = xk(2) - anchors_xyz(:,2);
         dz = z_fixed_m - anchors_xyz(:,3);
         hk = sqrt(dx.^2 + dy.^2 + dz.^2);
+        % Range floor keeps H finite when the estimate lands on an anchor.
         hk = max(hk, 1e-6);
 
         res = distances_m(:) - hk;
@@ -734,6 +770,7 @@ function [xy, Pxy, mae, ok] = weighted_trilateration_wls_all(anchors_xyz, distan
         g = H.' * W * res;
 
         if rcond(N) < 1e-10
+            % Degenerate anchor geometry: solve the damped system safely.
             step = pinv(N) * g;
         else
             step = N \ g;
@@ -741,6 +778,7 @@ function [xy, Pxy, mae, ok] = weighted_trilateration_wls_all(anchors_xyz, distan
 
         xk = xk + step;
         if norm(step) < 1e-4
+            % Sub-millimetric update: good enough for initialization.
             break;
         end
     end
@@ -755,6 +793,7 @@ function [xy, Pxy, mae, ok] = weighted_trilateration_wls_all(anchors_xyz, distan
 
     N = H.' * W * H + lambda * eye(2);
     if rcond(N) < 1e-10
+        % Pxy approximates local WLS uncertainty; pinv handles rank loss.
         Pxy = pinv(N);
     else
         Pxy = inv(N);
@@ -768,6 +807,7 @@ end
 function sigma2 = range_variance_model(sigma0_m, distance_m, distance_variance_gain)
 %RANGE_VARIANCE_MODEL Per-anchor distance-dependent variance model:
 % sigma_i^2(d) = sigma0_i^2 + k * d_i^2
+    % Floors prevent zero-variance anchors from dominating EKF/WLS.
     sigma0_sq = max(sigma0_m(:), 1e-3).^2;
     distance_sq = max(distance_m(:), 0).^2;
     sigma2 = sigma0_sq + distance_variance_gain .* distance_sq;
@@ -781,11 +821,13 @@ function [x_ell, y_ell] = covariance_ellipse_points(mu_xy, P_xy, n_sigma, n_pts)
 
     P_sym = 0.5 * (P_xy + P_xy.');
     if any(~isfinite(P_sym(:)))
+        % Plot NaNs instead of throwing if covariance is unavailable.
         return;
     end
 
     [V, D] = eig(P_sym);
     eigvals = diag(D);
+    % Tiny negative eigenvalues can appear from roundoff.
     eigvals = max(eigvals, 0);
     radii = n_sigma * sqrt(eigvals);
 
@@ -799,6 +841,7 @@ end
 function [x_cone, y_cone] = heading_cone_points(mu_xy, theta, sigma_theta, n_sigma, cone_len_m, n_arc_pts)
 %HEADING_CONE_POINTS Build a heading-uncertainty cone polygon.
     half_angle = n_sigma * max(sigma_theta, 0);
+    % Keep the patch a cone instead of wrapping into a full disk.
     half_angle = min(half_angle, pi - 1e-3);
 
     arc_angles = linspace(theta - half_angle, theta + half_angle, max(6, n_arc_pts));
