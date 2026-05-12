@@ -140,9 +140,9 @@ tls_orthogonal_residual_mean_ci95_low,-0.121470806896021,m
 tls_orthogonal_residual_mean_ci95_high,0.12147080689598,m
 tls_orthogonal_residual_min,-0.539974310153716,m
 tls_orthogonal_residual_max,0.784483961911941,m
-ols_heading_error_deg,4.09278151339031,deg
-ols_r2,0.900957386451807,unitless
-ols_residual_std,0.365052093705211,model_units
+ols_heading_error_deg,4.09278151339026,deg
+ols_r2,0.900957386451809,unitless
+ols_residual_std,0.365052093705208,model_units
 tls_heading_error_deg,4.15898380708597,deg
 xy_cov_xx_m2,1.34551206136856,m2
 xy_cov_yy_m2,23.7157109370642,m2

@@ -1,6 +1,6 @@
 TRAJ_EVAL linear-regression analysis
-session_dir: C:\Users\frass\OneDrive\Desktop\UNI\Magistrale - Mechatronics Engineering - Unitn\Anno 5\Intelligent Distributed system\Project_UNTRACKED\repo_andre_WORKINGVERSION\TRAJ_EVAL_logs\dept_rectilinear_nodes_134_126_20260508_112930
-samples_csv: C:\Users\frass\OneDrive\Desktop\UNI\Magistrale - Mechatronics Engineering - Unitn\Anno 5\Intelligent Distributed system\Project_UNTRACKED\repo_andre_WORKINGVERSION\TRAJ_EVAL_logs\dept_rectilinear_nodes_134_126_20260508_112930\samples.csv
+session_dir: /Users/alessandrobianchiceriani/Desktop/Scrivania_MPB/ALE_VARIE_DONTTOUCH/UNITN/MAGISTRALE/Secondo_Anno/Distributed_Estimation/DisSTrack-on-CLOVES/TRAJ_EVAL_logs/dept_rectilinear_nodes_134_126_20260508_112930
+samples_csv: /Users/alessandrobianchiceriani/Desktop/Scrivania_MPB/ALE_VARIE_DONTTOUCH/UNITN/MAGISTRALE/Secondo_Anno/Distributed_Estimation/DisSTrack-on-CLOVES/TRAJ_EVAL_logs/dept_rectilinear_nodes_134_126_20260508_112930/samples.csv
 ideal_reference: node 134 -> node 126
 ideal_start_xy_m: 186.200000, 8.240000
 ideal_end_xy_m: 184.220000, 21.260000

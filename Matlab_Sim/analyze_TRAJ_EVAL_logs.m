@@ -20,8 +20,9 @@ project_root = fileparts(script_dir);
 
 cfg = struct();
 % Leave both empty to analyze the latest session in project_root/TRAJ_EVAL_logs.
-cfg.session_dir = "";
-cfg.samples_csv_path = "";
+cfg.session_dir = "/Users/alessandrobianchiceriani/Desktop/Scrivania_MPB/ALE_VARIE_DONTTOUCH/UNITN/MAGISTRALE/Secondo_Anno/Distributed_Estimation/DisSTrack-on-CLOVES/TRAJ_EVAL_logs/dept_rectilinear_nodes_134_126_20260508_113934";
+fprintf(cfg.session_dir)
+cfg.samples_csv_path = "/Users/alessandrobianchiceriani/Desktop/Scrivania_MPB/ALE_VARIE_DONTTOUCH/UNITN/MAGISTRALE/Secondo_Anno/Distributed_Estimation/DisSTrack-on-CLOVES/TRAJ_EVAL_logs/dept_rectilinear_nodes_134_126_20260508_113934/samples.csv";
 
 cfg.logs_root_dir = fullfile(project_root, "TRAJ_EVAL_logs");
 cfg.map_csv_path = fullfile(script_dir, "DEPT_evb1000_map.csv");
@@ -47,6 +48,8 @@ end
 
 reference = load_reference_definition(session_dir, samples);
 anchors = load_dept_map_anchors(cfg.map_csv_path);
+anchors(end+1,:) = {134 186.2 8.24};
+anchors(end+1,:) = {126 184.22 21.26};
 analysis_mask = build_analysis_mask(samples, cfg);
 
 if nnz(analysis_mask) < 2
@@ -956,7 +959,7 @@ function fig = plot_map_analysis(samples, mask, reference, anchors, analysis, cf
     hold on; grid on; axis equal;
 
     if ~isempty(anchors) && height(anchors) > 0
-        plot(anchors.x, anchors.y, "bo", "MarkerSize", 7, "LineWidth", 1.0, ...
+        plot(anchors.x, anchors.y, "b^", "MarkerSize", 8, "LineWidth", 1.5, ...
             "DisplayName", "Anchors");
     end
 

@@ -141,7 +141,7 @@ tls_orthogonal_residual_mean_ci95_high,0.136743354245596,m
 tls_orthogonal_residual_min,-0.733880143534571,m
 tls_orthogonal_residual_max,0.925819014829651,m
 ols_heading_error_deg,3.2939816194922,deg
-ols_r2,0.84860723549357,unitless
+ols_r2,0.848607235493571,unitless
 ols_residual_std,0.445404514935065,model_units
 tls_heading_error_deg,3.38318100869317,deg
 xy_cov_xx_m2,1.31040068243232,m2
