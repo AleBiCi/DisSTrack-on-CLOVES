@@ -100,6 +100,7 @@ PROCESS_THREAD(ranging_process, ev, data)
   radio_init();
 
   while(1) {
+    // Start a new ranging round by broadcasting an INIT message and then collecting responses.
     uint8_t i, n_timeout = 0, n_dup = 0, n_meas = 0, n_los = 0, n_nlos = 0;
     memset(round_measures, 0, sizeof(round_measures));
 
@@ -129,6 +130,7 @@ PROCESS_THREAD(ranging_process, ev, data)
       if(!linkaddr_cmp(&resp_dst, &linkaddr_node_addr)) continue;
       if(resp_msg.hdr.seqn != seqn) continue;
 
+      /* SS-TWR IMPLEMENTATION */
       uint64_t init_tx_ts = get_tx_timestamp();
       uint64_t resp_rx_ts = get_rx_timestamp();
       uint64_t init_rx_ts, resp_tx_ts;
@@ -137,8 +139,9 @@ PROCESS_THREAD(ranging_process, ev, data)
 
       int64_t t_one = (int64_t)((resp_rx_ts - init_tx_ts) % DWT_VALUES);
       int64_t t_two = (int64_t)((resp_tx_ts - init_rx_ts) % DWT_VALUES);
-      double tof = ((t_one - t_two) / 2.0) * DWT_TIME_UNITS;
-      double dist_m = tof * SPEED_OF_LIGHT;
+      double tof = ((t_one - t_two) / 2.0) * DWT_TIME_UNITS; // From raw DW1000 time counts to seconds
+      double dist_m = tof * SPEED_OF_LIGHT; // From time of flight to distance in meters
+
       // 1. Hard Gating a livello di sensore (scarta l'impossibile)
       if (dist_m < -0.10 || dist_m > 20.0) {
       // Puoi stampare un log di debug qui se ti è utile

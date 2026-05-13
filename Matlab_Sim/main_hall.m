@@ -730,59 +730,78 @@ function summary = parse_round_summary(line)
 end
 
 function [xy, Pxy, mae, ok] = weighted_trilateration_wls_all(anchors_xyz, distances_m, std_m, z_fixed_m, x0, distance_variance_gain)
-%WEIGHTED_TRILATERATION_WLS_ALL Weighted Gauss-Newton range trilateration.
+%WEIGHTED_TRILATERATION_WLS_ALL Estimate tag xy from one ranging round.
+% The tag height is fixed, so each 3-D anchor range constrains only [x,y].
+% WLS minimizes sum_i ((d_i - h_i(x,y)) / sigma_i)^2 with Gauss-Newton.
+
+    % Default to an invalid result; only set ok=true after all outputs are finite.
     xy = [NaN; NaN];
     Pxy = [];
     mae = NaN;
     ok = false;
 
+    % Step 0: require at least one anchor before building the WLS system.
     n = size(anchors_xyz, 1);
     if n < 1
         % No anchors means no geometric information.
         return;
     end
 
+    % Step 1: build the diagonal inverse-variance weight matrix.
+    % sigma_i^2 combines the anchor baseline noise with a distance-dependent
+    % term, so noisy/far anchors receive a smaller weight in the fit.
     sigma2 = range_variance_model(std_m(:), distances_m(:), distance_variance_gain);
     W = diag(1 ./ sigma2);
 
+    % Step 2: choose the starting point for the nonlinear solve.
     if isempty(x0) || any(~isfinite(x0))
-        % Use the noise-weighted anchor centroid when no prior pose is available.
+        % Without a finite prior, use a stable inverse-variance anchor centroid.
         weights = 1 ./ sigma2;
         weights = weights / sum(weights);
         xk = [sum(weights .* anchors_xyz(:,1)); sum(weights .* anchors_xyz(:,2))];
     else
+        % With a valid prior, warm-start WLS from that previous/best estimate.
         xk = x0(:);
     end
 
+    % Step 3: iterate Gauss-Newton on the nonlinear range residuals.
+    % Light damping keeps the normal equations usable with weak geometry.
     lambda = 1e-4;
     for it = 1:15
+        % Offsets from each anchor to the current xy estimate; dz is fixed.
         dx = xk(1) - anchors_xyz(:,1);
         dy = xk(2) - anchors_xyz(:,2);
         dz = z_fixed_m - anchors_xyz(:,3);
+
+        % Predicted ranges h_i(xk). The floor avoids division by zero in H.
         hk = sqrt(dx.^2 + dy.^2 + dz.^2);
-        % Range floor keeps H finite when the estimate lands on an anchor.
         hk = max(hk, 1e-6);
 
+        % Residuals and Jacobian of h_i with respect to [x,y].
+        % Positive residual means the measured range is longer than predicted.
         res = distances_m(:) - hk;
         H = [dx ./ hk, dy ./ hk];
 
+        % Weighted normal equations for the Gauss-Newton correction step.
         N = H.' * W * H + lambda * eye(2);
         g = H.' * W * res;
 
         if rcond(N) < 1e-10
-            % Degenerate anchor geometry: solve the damped system safely.
+            % Rank-poor geometry: use the damped pseudo-inverse step.
             step = pinv(N) * g;
         else
             step = N \ g;
         end
 
+        % Apply the local linearized correction.
         xk = xk + step;
         if norm(step) < 1e-4
-            % Sub-millimetric update: good enough for initialization.
+            % Sub-millimetric update: the solution is stable enough to stop.
             break;
         end
     end
 
+    % Step 4: recompute residuals/Jacobian at the final xy estimate.
     dx = xk(1) - anchors_xyz(:,1);
     dy = xk(2) - anchors_xyz(:,2);
     dz = z_fixed_m - anchors_xyz(:,3);
@@ -791,14 +810,16 @@ function [xy, Pxy, mae, ok] = weighted_trilateration_wls_all(anchors_xyz, distan
     res = distances_m(:) - hk;
     H = [dx ./ hk, dy ./ hk];
 
+    % Step 5: approximate local xy covariance from the inverse information.
     N = H.' * W * H + lambda * eye(2);
     if rcond(N) < 1e-10
-        % Pxy approximates local WLS uncertainty; pinv handles rank loss.
+        % Use pinv when the anchor layout is nearly rank deficient.
         Pxy = pinv(N);
     else
         Pxy = inv(N);
     end
 
+    % Step 6: return the estimate, a residual quality score, and validity.
     xy = xk;
     mae = mean(abs(res), 'omitnan');
     ok = all(isfinite([xy; mae])) && all(isfinite(Pxy(:)));
